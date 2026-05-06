@@ -1,0 +1,68 @@
+﻿ **FREE** Full Vector Optical Modesolver
+
+https://github.com/davidchutchings/EMpy
+
+I've sent this to some local academics off the top of my head. Apologies if it's of no interest to you, and also feel free to forward or inform anyone else wihin UofG or outwith who may be interested. The software is covered by MIT License so is free to use and modify.
+
+I'm happy to provide further info and a walk-through demo upon request.
+
+Dave
+
+The full-vectorial finite-difference modesolver is part of the Electromagnetic Python suite available from GitHub and PyPI repositories (which was a port from UMD MatLab implementation), and can be installed using pip:
+
+pip install ElectromagneticPython
+
+I have created a fork on GitHub which adds in the examples, for isotropic and anisotropic (birefringent, magneto-optic) media respectively :
+
+shapely_modesolver.py
+
+shapely_modesolver_anis.py
+
+"""Fully vectorial finite-difference mode solver example.
+
+Flexible mode solver example for fundamental modes for anisotropic media
+by David Hutchings, James Watt School of Engineering, University of Glasgow
+David.Hutchings@glasgow.ac.uk
+
+Features added over basic examples in EMPy
+
+1. Uses shapely python library for manipulation and analysis of geometric 
+objects in the Cartesian plane. It allows polygon regions to be employed.
+
+2. smooth option applies a 2x2 cell moving average to permittivity tensors
+
+3. Contour plots of Stokes parameters are available. These are pure real 
+values and determined from both H and E field values (E co-located using a 
+2x2 cell moving average) rather than plane-wave approximation of one field 
+component. S0 is the irradiance, values are scaled to S0(max) and contours 
+are at -3dB intervals. Additionally, average values over modal 
+cross-section are computed.
+S0 = Re(E_x H_y^* -E_y H_x^*) = S.z_unit (Irradiance)
+S1 = Re(E_x H_y^* +E_y H_x^*)            (modal normal birefringence)
+S2 = Re(E_y H_y^* -E_x H_x^*)            (modal diagonal birefringence)
+S3 = Im(E_y H_y^* +E_x H_x^*)            (modal circular birefringence, 
+                usually non-zero only for magneto-optic Faraday rotation)
+
+Integrated Optical Isolators (planned for: Springer Series in Optical Sciences)
+chapter: Theory of Faraday effect and waveguide mode conversion
+David C. Hutchings""" 
+
+The following plots are an example of a wet-etched Si waveguide on silica
+
+neff = (2.703379277487516-5.029123508730282e-11j)
+ave S1= 0.9804964049889866
+ave S2= -6.040108437005619e-12
+ave S3= -2.134538269724283e-10
+
+
+
+
+-- 
+ Professor David C. Hutchings
+ Professor of Optical and Quantum Electronics
+ James Watt School of Engineering
+ University of Glasgow               David.Hutchings@glasgow.ac.uk
+ Glasgow G12 8LS, Scotland, U.K.           Tel:+44-(0)141-330-6026
+
+ The University of Glasgow, charity number SC004401
+
