@@ -33,7 +33,10 @@ import shapely
 import EMpy 
 import matplotlib.pyplot as plt
 from matplotlib import ticker
+from shapely import plotting
 from scipy import signal
+from scipy import integrate
+
 plt.rcParams.update({'font.size': 25})
 
 """Define cross-section geometry of simulation each element tuple contains
@@ -42,25 +45,25 @@ shapely.box(xmin, ymin, xmax, ymax) is shorthand method for box polygons
 units should match units of wavelength wl
 """
 
-geom = (("base",shapely.box(-800,-800,800,800),1.0**2),
-        ("substrate",shapely.box(-800,-800,800,0),1.5**2),
+geom = (("base",shapely.box(-640,-480,640,800),1.0**2),
+        ("substrate",shapely.box(-640,-480,640,0),1.5**2),
 #        ("core",shapely.box(-240,0,240,340),3.4**2))
         ("core",shapely.Polygon(((-400,0),(400,0),(160,340),(-160,340),(-400,0))),3.4**2))
 
 wl = 1550
-nx, ny = 161, 161
+k = 6
+nx, ny = 2**k+1, 2**k+1
 bbox = geom[0][1].bounds
 x = numpy.linspace(bbox[0], bbox[2], nx)
 y = numpy.linspace(bbox[1], bbox[3], ny)
+ix = numpy.arange(nx)
+iy = numpy.arange(ny)
 
 """ smooth option applies a convolution to dielectric tensor such that 
 it uses a 2x2-point moving average value. this will help smooth out 
 staircase profiles 
 """
 smooth = True
-if smooth:
-    x = signal.convolve(x,[0.5,0.5],mode='valid')
-    y = signal.convolve(y,[0.5,0.5],mode='valid')
 
 def epsfunc(x_, y_): 
     """Return a dielectric tensor matrix describing a 2d material.
@@ -79,16 +82,16 @@ def epsfunc(x_, y_):
         yw = y_
         
 #assume base medium is isotropic
-    working = numpy.zeros((xw.size,yw.size),dtype='complex')
-    working[:,:] = geom[0][2]*numpy.ones((xw.size,yw.size))
-    for i in range(1,len(geom)):
-        xybounds = geom[i][1].bounds
-        for ix in range(xw.size):
-            if (xybounds[0] <= xw[ix] <= xybounds[2]): 
-                for iy in range(yw.size):
-                    if (xybounds[1] <= yw[iy] <= xybounds[3]):
-                        if shapely.covers(geom[i][1],shapely.Point(xw[ix],yw[iy])):
-                            working[ix,iy] = numpy.array(geom[i][2])
+    working = numpy.empty((xw.size,yw.size),dtype='complex')
+    for ix, xv in enumerate(xw):
+        for iy, yv in enumerate(yw):
+
+            cov_test=False
+            i=len(geom)
+            while not(cov_test):
+                i += -1
+                cov_test=shapely.covers(geom[i][1],shapely.Point(xv,yv))
+            working[ix,iy] = geom[i][2]                 
                             
     if smooth:
         newworking = numpy.empty((x_.size,y_.size),dtype='complex')     
@@ -109,14 +112,6 @@ levls2 = numpy.geomspace(1./1024.,1.,num=11)
 xe = signal.convolve(x,[0.5,0.5],mode='valid')
 ye = signal.convolve(y,[0.5,0.5],mode='valid')
 label_loc = [(3*bbox[2]+bbox[0])/4.,(5*bbox[3]+bbox[1])/6.]
-
-def plot_coords(coords):
-    pts = list(coords)
-    x,y = zip(*pts)
-
-    plt.plot(x,y)
-    
-    return
     
 def geom_outline():
     ax.set_box_aspect(1)
@@ -126,166 +121,102 @@ def geom_outline():
     ax.set_xlim(bbox[0], bbox[2])
     ax.set_ylim(bbox[1], bbox[3])
     ax.margins(0)
-    [plot_coords(geom[i][1].exterior.coords) for i in range(1,len(geom))]
+    plotting.plot_polygon(geom[1][1], color='0.8')
+    [plotting.plot_polygon(geom[i][1], color='0.5') for i in range(2,len(geom))]
     return
 
-print(solver.modes[0].neff)
-fmax=abs(solver.modes[0].Ex).max()
-fig = plt.figure()
-ax = fig.add_subplot(2, 3, 1)
-plt.contour(xe,ye,abs(solver.modes[0].Ex.T), fmax*levls, 
-            cmap='jet', locator=ticker.LogLocator())
-ax.text(label_loc[0],label_loc[1],r"$E_x$")
-geom_outline()
-ax = fig.add_subplot(2, 3, 2)
-plt.contour(xe,ye,abs(solver.modes[0].Ey.T), fmax*levls, 
-            cmap='jet', locator=ticker.LogLocator())
-ax.text(label_loc[0],label_loc[1],r"$E_y$")
-geom_outline()
-ax = fig.add_subplot(2, 3, 3)
-plt.contour(xe,ye,abs(solver.modes[0].Ez.T), fmax*levls, 
-            cmap='jet', locator=ticker.LogLocator())
-ax.text(label_loc[0],label_loc[1],r"$E_z$")
-geom_outline()
-fmax=abs(solver.modes[0].Hy).max()
-ax = fig.add_subplot(2, 3, 4)
-plt.contour(x,y,abs(solver.modes[0].Hx.T), fmax*levls, 
-            cmap='jet', locator=ticker.LogLocator())
-ax.text(label_loc[0],label_loc[1],r"$H_x$")
-geom_outline()
-ax = fig.add_subplot(2, 3, 5)
-plt.contour(x,y,abs(solver.modes[0].Hy.T), fmax*levls, 
-            cmap='jet', locator=ticker.LogLocator())
-ax.text(label_loc[0],label_loc[1],r"$H_y$")
-geom_outline()
-ax = fig.add_subplot(2, 3, 6)
-plt.contour(x,y,abs(solver.modes[0].Hz.T), fmax*levls, 
-            cmap='jet', locator=ticker.LogLocator())
-ax.text(label_loc[0],label_loc[1],r"$H_z$")
-geom_outline()
-fig.tight_layout()
-plt.show()
+for n in numpy.arange(neigs):
 
-ExatH = signal.convolve2d(solver.modes[0].Ex,[[0.25,0.25],[0.25,0.25]])
-EyatH = signal.convolve2d(solver.modes[0].Ey,[[0.25,0.25],[0.25,0.25]])
-EzatH = signal.convolve2d(solver.modes[0].Ez,[[0.25,0.25],[0.25,0.25]])
+    print(solver.modes[n].neff)
+    fmax=max(abs(solver.modes[n].Ex).max(), 
+             abs(solver.modes[n].Ey).max())
+    fig = plt.figure()
+
+    ax = fig.add_subplot(2, 3, 1)
+    geom_outline()
+    plt.contour(xe,ye,abs(solver.modes[n].Ex.T), fmax*levls, 
+            cmap='jet', locator=ticker.LogLocator())
+    ax.text(label_loc[0],label_loc[1],r"$E_x$")
+
+    ax = fig.add_subplot(2, 3, 2)
+    geom_outline()
+    plt.contour(xe,ye,abs(solver.modes[n].Ey.T), fmax*levls, 
+            cmap='jet', locator=ticker.LogLocator())
+    ax.text(label_loc[0],label_loc[1],r"$E_y$")
+
+    ax = fig.add_subplot(2, 3, 3)
+    geom_outline()
+    plt.contour(xe,ye,abs(solver.modes[n].Ez.T), fmax*levls, 
+            cmap='jet', locator=ticker.LogLocator())
+    ax.text(label_loc[0],label_loc[1],r"$E_z$")
+
+    fmax=max(abs(solver.modes[n].Hx).max(), 
+             abs(solver.modes[n].Hy).max())
+    ax = fig.add_subplot(2, 3, 4)
+    geom_outline()
+    plt.contour(x,y,abs(solver.modes[n].Hx.T), fmax*levls, 
+            cmap='jet', locator=ticker.LogLocator())
+    ax.text(label_loc[0],label_loc[1],r"$H_x$")
+
+    ax = fig.add_subplot(2, 3, 5)
+    geom_outline()
+    plt.contour(x,y,abs(solver.modes[n].Hy.T), fmax*levls, 
+            cmap='jet', locator=ticker.LogLocator())
+    ax.text(label_loc[0],label_loc[1],r"$H_y$")
+
+    ax = fig.add_subplot(2, 3, 6)
+    geom_outline()
+    plt.contour(x,y,abs(solver.modes[n].Hz.T), fmax*levls, 
+            cmap='jet', locator=ticker.LogLocator())
+    ax.text(label_loc[0],label_loc[1],r"$H_z$")
+
+    fig.tight_layout()
+    plt.show()
+
+    ExatH = signal.convolve2d(solver.modes[n].Ex,[[0.25,0.25],[0.25,0.25]])
+    EyatH = signal.convolve2d(solver.modes[n].Ey,[[0.25,0.25],[0.25,0.25]])
+    EzatH = signal.convolve2d(solver.modes[n].Ez,[[0.25,0.25],[0.25,0.25]])
 #Stokes parameters
-q1 = ExatH*numpy.conjugate(solver.modes[0].Hy)
-q2 = EyatH*numpy.conjugate(solver.modes[0].Hx)
-q3 = EyatH*numpy.conjugate(solver.modes[0].Hy)
-q4 = ExatH*numpy.conjugate(solver.modes[0].Hx)
+    q1 = ExatH*numpy.conjugate(solver.modes[n].Hy)
+    q2 = EyatH*numpy.conjugate(solver.modes[n].Hx)
+    q3 = EyatH*numpy.conjugate(solver.modes[n].Hy)
+    q4 = ExatH*numpy.conjugate(solver.modes[n].Hx)
 
-S0 = q1.real-q2.real
-S1 = q1.real+q2.real
-S2 = q3.real-q4.real
-S3 = q3.imag+q4.imag
-denom = S0.sum()
-print("ave S1=",S1.sum()/denom)
-print("ave S2=",S2.sum()/denom)
-print("ave S3=",S3.sum()/denom)
+    S0 = q1.real-q2.real
+    S1 = q1.real+q2.real
+    S2 = q3.real-q4.real
+    S3 = q3.imag+q4.imag
+    denom = integrate.simpson(integrate.simpson(S0[ix[:,None],iy], iy), ix)
+    print("ave S1=",integrate.simpson(integrate.simpson(S1[ix[:,None],iy], iy), ix)/denom)
+    print("ave S2=",integrate.simpson(integrate.simpson(S2[ix[:,None],iy], iy), ix)/denom)
+    print("ave S3=",integrate.simpson(integrate.simpson(S3[ix[:,None],iy], iy), ix)/denom)
+    fmax=abs(S0).max()
+    fig = plt.figure()
 
-fmax=abs(S0).max()
-fig = plt.figure()
-ax = fig.add_subplot(2, 2, 1)
-plt.contour(x,y,abs(S0.T), fmax*levls2, 
+    ax = fig.add_subplot(2, 2, 1)
+    geom_outline()
+    plt.contour(x,y,abs(S0.T), fmax*levls2, 
             cmap='jet', locator=ticker.LogLocator())
-ax.text(label_loc[0],label_loc[1],r"$S_0$")
-geom_outline()
-ax = fig.add_subplot(2, 2, 2)
-plt.contour(x,y,abs(S1.T), fmax*levls2, 
-            cmap='jet', locator=ticker.LogLocator())
-ax.text(label_loc[0],label_loc[1],r"$|S_1|$")
-geom_outline()
-ax = fig.add_subplot(2, 2, 3)
-plt.contour(x,y,abs(S2.T), fmax*levls2, 
-            cmap='jet', locator=ticker.LogLocator())
-ax.text(label_loc[0],label_loc[1],r"$|S_2|$")
-geom_outline()
-ax = fig.add_subplot(2, 2, 4)
-plt.contour(x,y,abs(S3.T), fmax*levls2, cmap='jet', locator=ticker.LogLocator())
-ax.text(label_loc[0],label_loc[1],r"$|S_3|$")
-geom_outline()
-fig.tight_layout()
-plt.show()
+    ax.text(label_loc[0],label_loc[1],r"$S_0$")
 
-print(solver.modes[1].neff)
-fmax=abs(solver.modes[1].Ey).max()
-fig = plt.figure()
-ax = fig.add_subplot(2, 3, 1)
-plt.contour(xe,ye,abs(solver.modes[1].Ex.T), fmax*levls, 
+    ax = fig.add_subplot(2, 2, 2)
+    geom_outline()
+    plt.contour(x,y,abs(S1.T), fmax*levls2, 
             cmap='jet', locator=ticker.LogLocator())
-ax.text(label_loc[0],label_loc[1],r"$E_x$")
-geom_outline()
-ax = fig.add_subplot(2, 3, 2)
-plt.contour(xe,ye,abs(solver.modes[1].Ey.T), fmax*levls, 
-            cmap='jet', locator=ticker.LogLocator())
-ax.text(label_loc[0],label_loc[1],r"$E_y$")
-geom_outline()
-ax = fig.add_subplot(2, 3, 3)
-plt.contour(xe,ye,abs(solver.modes[1].Ez.T), fmax*levls, 
-            cmap='jet', locator=ticker.LogLocator())
-ax.text(label_loc[0],label_loc[1],r"$E_z$")
-geom_outline()
-fmax=abs(solver.modes[1].Hx).max()
-ax = fig.add_subplot(2, 3, 4)
-plt.contour(x,y,abs(solver.modes[1].Hx.T), fmax*levls, 
-            cmap='jet', locator=ticker.LogLocator())
-ax.text(label_loc[0],label_loc[1],r"$H_x$")
-geom_outline()
-ax = fig.add_subplot(2, 3, 5)
-plt.contour(x,y,abs(solver.modes[1].Hy.T), fmax*levls, 
-            cmap='jet', locator=ticker.LogLocator())
-ax.text(label_loc[0],label_loc[1],r"$H_y$")
-geom_outline()
-ax = fig.add_subplot(2, 3, 6)
-plt.contour(x,y,abs(solver.modes[1].Hz.T), fmax*levls, 
-            cmap='jet', locator=ticker.LogLocator())
-ax.text(label_loc[0],label_loc[1],r"$H_z$")
-geom_outline()
-fig.tight_layout()
-plt.show()
+    ax.text(label_loc[0],label_loc[1],r"$|S_1|$")
 
-ExatH = signal.convolve2d(solver.modes[1].Ex,[[0.25,0.25],[0.25,0.25]])
-EyatH = signal.convolve2d(solver.modes[1].Ey,[[0.25,0.25],[0.25,0.25]])
-EzatH = signal.convolve2d(solver.modes[1].Ez,[[0.25,0.25],[0.25,0.25]])
-#Stokes parameters
-q1 = ExatH*numpy.conjugate(solver.modes[1].Hy)
-q2 = EyatH*numpy.conjugate(solver.modes[1].Hx)
-q3 = EyatH*numpy.conjugate(solver.modes[1].Hy)
-q4 = ExatH*numpy.conjugate(solver.modes[1].Hx)
-
-S0 = q1.real-q2.real
-S1 = q1.real+q2.real
-S2 = q3.real-q4.real
-S3 = q3.imag+q4.imag
-denom = S0.sum()
-print("ave S1=",S1.sum()/denom)
-print("ave S2=",S2.sum()/denom)
-print("ave S3=",S3.sum()/denom)
-
-fmax=abs(S0).max()
-fig = plt.figure(tight_layout=True)
-
-ax = fig.add_subplot(2, 2, 1)
-plt.contour(x,y,abs(S0.T), fmax*levls2, 
+    ax = fig.add_subplot(2, 2, 3)
+    geom_outline()
+    plt.contour(x,y,abs(S2.T), fmax*levls2, 
             cmap='jet', locator=ticker.LogLocator())
-ax.text(label_loc[0],label_loc[1],r"$S_0$")
-geom_outline()
-ax = fig.add_subplot(2, 2, 2)
-plt.contour(x,y,abs(S1.T), fmax*levls2, 
-            cmap='jet', locator=ticker.LogLocator())
-ax.text(label_loc[0],label_loc[1],r"$|S_1|$")
-geom_outline()
-ax = fig.add_subplot(2, 2, 3)
-plt.contour(x,y,abs(S2.T), fmax*levls2, 
-            cmap='jet', locator=ticker.LogLocator())
-ax.text(label_loc[0],label_loc[1],r"$|S_2|$")
-geom_outline()
-ax = fig.add_subplot(2, 2, 4)
-plt.contour(x,y,abs(S3.T), fmax*levls2, cmap='jet', locator=ticker.LogLocator())
-ax.text(label_loc[0],label_loc[1],r"$|S_3|$")
-geom_outline()
-fig.tight_layout()
-plt.show()
+    ax.text(label_loc[0],label_loc[1],r"$|S_2|$")
 
+    ax = fig.add_subplot(2, 2, 4)
+    geom_outline()
+    plt.contour(x,y,abs(S3.T), fmax*levls2, 
+                cmap='jet', locator=ticker.LogLocator())
+    ax.text(label_loc[0],label_loc[1],r"$|S_3|$")
+
+    fig.tight_layout()
+    plt.show()
 
