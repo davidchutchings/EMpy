@@ -38,7 +38,7 @@ class Layer:
             # isotropic
             EPS = numpy.zeros(2 * hmax + 1, dtype=complex)
             EPS1 = numpy.zeros_like(EPS)
-            rix = self.mat.n(wl)
+            rix = numpy.asarray(self.mat.n(wl)).item()
             EPS[hmax] = rix**2
             EPS1[hmax] = rix**-2
             return EPS, EPS1
@@ -49,7 +49,7 @@ class Layer:
             EPS[:, :, hmax] = (
                 numpy.squeeze(self.mat.epsilonTensor(wl)) / EMpy.constants.eps0
             )
-            EPS1[:, :, hmax] = scipy.linalg.inv(EPS[:, :, hmax])
+            EPS1[:, :, hmax] = numpy.linalg.inv(EPS[:, :, hmax])
             return EPS, EPS1
 
     def capacitance(self, area=1.0, wl=0):
@@ -59,7 +59,7 @@ class Layer:
             eps = EMpy.constants.eps0 * numpy.real(self.mat.n(wl).item() ** 2)
         else:
             # suppose to compute the capacitance along the z-axis
-            eps = self.mat.epsilonTensor(wl)[2, 2, 0]
+            eps = float(numpy.real(self.mat.epsilonTensor(wl)[2, 2, 0]))
 
         return eps * area / self.thickness
 
@@ -104,28 +104,33 @@ class BinaryGrating:
             EPS1 = numpy.zeros_like(EPS)
             eps1 = numpy.squeeze(self.mat1.epsilonTensor(wl)) / EMpy.constants.eps0
             eps2 = numpy.squeeze(self.mat2.epsilonTensor(wl)) / EMpy.constants.eps0
+            inv_eps1 = numpy.linalg.inv(eps1)
+            inv_eps2 = numpy.linalg.inv(eps2)
             f = self.dc
             h = numpy.arange(-hmax, hmax + 1)
             for ih, hh in enumerate(h):
                 EPS[:, :, ih] = (eps1 - eps2) * f * numpy.sinc(hh * f) + eps2 * (
                     hh == 0
                 )
-                EPS1[:, :, ih] = (
-                    scipy.linalg.inv(eps1) - scipy.linalg.inv(eps2)
-                ) * f * numpy.sinc(hh * f) + scipy.linalg.inv(eps2) * (hh == 0)
+                EPS1[:, :, ih] = (inv_eps1 - inv_eps2) * f * numpy.sinc(
+                    hh * f
+                ) + inv_eps2 * (hh == 0)
             return EPS, EPS1
 
     def capacitance(self, area=1.0, wl=0):
         """Capacitance = eps0 * eps_r * area / thickness."""
 
         if self.isIsotropic():
-            eps = EMpy.constants.eps0 * numpy.real(
-                self.mat1.n(wl) ** 2 * self.dc + self.mat2.n(wl) ** 2 * (1 - self.dc)
+            eps = EMpy.constants.eps0 * float(
+                numpy.real(
+                    self.mat1.n(wl).item() ** 2 * self.dc
+                    + self.mat2.n(wl).item() ** 2 * (1 - self.dc)
+                )
             )
         else:
             eps1 = self.mat1.epsilonTensor(wl)[2, 2, 0]
             eps2 = self.mat2.epsilonTensor(wl)[2, 2, 0]
-            eps = numpy.real(eps1 * self.dc + eps2 * (1 - self.dc))
+            eps = float(numpy.real(eps1 * self.dc + eps2 * (1 - self.dc)))
 
         return eps * area / self.thickness
 
@@ -177,10 +182,11 @@ class SymmetricDoubleGrating:
             rix3 = self.mat3.n(wl)
             f1 = self.dc1
             f2 = self.dc2
+            fM = (1.0 - f1 - f2) / 2.0
             h = numpy.arange(-hmax, hmax + 1)
             N = len(h)
-            A = -N * f1 / 2.0
-            B = N * f2 / 2.0
+            A = -N * (f1 + fM) / 2.0
+            B = N * (f2 + fM) / 2.0
             EPS = (
                 rix3**2 * (h == 0)
                 + (rix1**2 - rix3**2)
@@ -211,12 +217,16 @@ class SymmetricDoubleGrating:
             eps1 = numpy.squeeze(self.mat1.epsilonTensor(wl)) / EMpy.constants.eps0
             eps2 = numpy.squeeze(self.mat2.epsilonTensor(wl)) / EMpy.constants.eps0
             eps3 = numpy.squeeze(self.mat3.epsilonTensor(wl)) / EMpy.constants.eps0
+            inv_eps1 = numpy.linalg.inv(eps1)
+            inv_eps2 = numpy.linalg.inv(eps2)
+            inv_eps3 = numpy.linalg.inv(eps3)
             f1 = self.dc1
             f2 = self.dc2
+            fM = (1.0 - f1 - f2) / 2.0
             h = numpy.arange(-hmax, hmax + 1)
             N = len(h)
-            A = -N * f1 / 2.0
-            B = N * f2 / 2.0
+            A = -N * (f1 + fM) / 2.0
+            B = N * (f2 + fM) / 2.0
             for ih, hh in enumerate(h):
                 EPS[:, :, ih] = (
                     (eps1 - eps3)
@@ -230,15 +240,15 @@ class SymmetricDoubleGrating:
                     + eps3 * (hh == 0)
                 )
                 EPS1[:, :, ih] = (
-                    (scipy.linalg.inv(eps1) - scipy.linalg.inv(eps3))
+                    (inv_eps1 - inv_eps3)
                     * f1
                     * numpy.sinc(hh * f1)
                     * numpy.exp(2j * numpy.pi * hh / N * A)
-                    + (scipy.linalg.inv(eps2) - scipy.linalg.inv(eps3))
+                    + (inv_eps2 - inv_eps3)
                     * f2
                     * numpy.sinc(hh * f2)
                     * numpy.exp(2j * numpy.pi * hh / N * B)
-                    + scipy.linalg.inv(eps3) * (hh == 0)
+                    + inv_eps3 * (hh == 0)
                 )
             return EPS, EPS1
 
@@ -246,17 +256,21 @@ class SymmetricDoubleGrating:
         """Capacitance = eps0 * eps_r * area / thickness."""
 
         if self.isIsotropic():
-            eps = EMpy.constants.eps0 * numpy.real(
-                self.mat1.n(wl) ** 2 * self.dc1
-                + self.mat2.n(wl) ** 2 * self.dc2
-                + self.mat3.n(wl) ** 2 * (1 - self.dc1 - self.dc2)
+            eps = EMpy.constants.eps0 * float(
+                numpy.real(
+                    self.mat1.n(wl).item() ** 2 * self.dc1
+                    + self.mat2.n(wl).item() ** 2 * self.dc2
+                    + self.mat3.n(wl).item() ** 2 * (1 - self.dc1 - self.dc2)
+                )
             )
         else:
             eps1 = self.mat1.epsilonTensor(wl)[2, 2, 0]
             eps2 = self.mat2.epsilonTensor(wl)[2, 2, 0]
             eps3 = self.mat3.epsilonTensor(wl)[2, 2, 0]
-            eps = numpy.real(
-                eps1 * self.dc1 + eps2 * self.dc2 + eps3 * (1 - self.dc1 - self.dc2)
+            eps = float(
+                numpy.real(
+                    eps1 * self.dc1 + eps2 * self.dc2 + eps3 * (1 - self.dc1 - self.dc2)
+                )
             )
 
         return eps * area / self.thickness
@@ -335,6 +349,9 @@ class AsymmetricDoubleGrating(SymmetricDoubleGrating):
             eps1 = numpy.squeeze(self.mat1.epsilonTensor(wl)) / EMpy.constants.eps0
             eps2 = numpy.squeeze(self.mat2.epsilonTensor(wl)) / EMpy.constants.eps0
             eps3 = numpy.squeeze(self.mat3.epsilonTensor(wl)) / EMpy.constants.eps0
+            inv_eps1 = numpy.linalg.inv(eps1)
+            inv_eps2 = numpy.linalg.inv(eps2)
+            inv_eps3 = numpy.linalg.inv(eps3)
             f1 = self.dc1
             f2 = self.dc2
             fM = self.dcM
@@ -355,36 +372,17 @@ class AsymmetricDoubleGrating(SymmetricDoubleGrating):
                     + eps3 * (hh == 0)
                 )
                 EPS1[:, :, ih] = (
-                    (scipy.linalg.inv(eps1) - scipy.linalg.inv(eps3))
+                    (inv_eps1 - inv_eps3)
                     * f1
                     * numpy.sinc(hh * f1)
                     * numpy.exp(2j * numpy.pi * hh / N * A)
-                    + (scipy.linalg.inv(eps2) - scipy.linalg.inv(eps3))
+                    + (inv_eps2 - inv_eps3)
                     * f2
                     * numpy.sinc(hh * f2)
                     * numpy.exp(2j * numpy.pi * hh / N * B)
-                    + scipy.linalg.inv(eps3) * (hh == 0)
+                    + inv_eps3 * (hh == 0)
                 )
             return EPS, EPS1
-
-    def capacitance(self, area=1.0, wl=0):
-        """Capacitance = eps0 * eps_r * area / thickness."""
-
-        if self.isIsotropic():
-            eps = EMpy.constants.eps0 * numpy.real(
-                self.mat1.n(wl) ** 2 * self.dc1
-                + self.mat2.n(wl) ** 2 * self.dc2
-                + self.mat3.n(wl) ** 2 * (1 - self.dc1 - self.dc2)
-            )
-        else:
-            eps1 = self.mat1.epsilonTensor(wl)[2, 2, 0]
-            eps2 = self.mat2.epsilonTensor(wl)[2, 2, 0]
-            eps3 = self.mat3.epsilonTensor(wl)[2, 2, 0]
-            eps = numpy.real(
-                eps1 * self.dc1 + eps2 * self.dc2 + eps3 * (1 - self.dc1 - self.dc2)
-            )
-
-        return eps * area / self.thickness
 
     def __str__(self):
         """Return the description of a binary grating."""
@@ -446,6 +444,12 @@ class LiquidCrystalCell:
         self.totaltwist = totaltwist
         self.nlayers = nlayers
         self.data_file = data_file
+        if self.nlayers < 3:
+            raise ValueError("nlayers must be at least 3.")
+        if self.t_anchoring < 0 or self.t_tot <= 2.0 * self.t_anchoring:
+            raise ValueError(
+                "t_tot must be strictly greater than 2 * t_anchoring (with t_anchoring >= 0)."
+            )
         # thicknesses of internal layers
         tlc_internal = (
             (self.t_tot - 2.0 * self.t_anchoring)
@@ -473,8 +477,11 @@ class LiquidCrystalCell:
         self.__voltage = v
         if self.data_file is not None:
             self.__angles = self._get_angles_from_file()
+            self.__twists = EMpy.utils.rad2deg(
+                self.totaltwist * self.normalized_sample_points
+            )
         else:
-            self.__angles = self._get_angles_from_bvp()
+            self.__angles, self.__twists = self._get_angles_from_bvp()
 
     voltage = property(fget=getvoltage, fset=setvoltage)
 
@@ -482,6 +489,11 @@ class LiquidCrystalCell:
         return self.__angles
 
     angles = property(fget=getangles)
+
+    def gettwists(self):
+        return self.__twists
+
+    twists = property(fget=gettwists)
 
     def __ode_3k(self, z, f):
         """Inspiration from:
@@ -496,7 +508,9 @@ class LiquidCrystalCell:
         K11 = self.lc.K11
         K22 = self.lc.K22
         K33 = self.lc.K33
-        q0 = self.lc.q0
+        # z in [0, 1] is normalized by the active cell thickness d = t_tot - 2 * t_anchoring,
+        # so the chiral wavenumber q0 [m^-1] scales as q0 * d.
+        q0 = self.lc.q0 * (self.t_tot - 2.0 * self.t_anchoring)
         epslow = self.lc.epslow
         deleps = self.lc.deleps
 
@@ -560,7 +574,7 @@ class LiquidCrystalCell:
         """Inspiration from:
         U{http://www.ee.ucl.ac.uk/~rjames/modelling/constant-order/oned/}."""
 
-        self.maxtilt = 90 * numpy.pi / 180 - self.pretilt
+        self.maxtilt = 0.9 * (numpy.pi / 2.0 - self.pretilt)
         init = numpy.array(
             [
                 self.pretilt + self.maxtilt * 4 * z * (1 - z),
@@ -575,28 +589,64 @@ class LiquidCrystalCell:
         return init, self.__ode_3k(z, init)
 
     def __apply_tension(self):
-        """Inspiration from:
-        U{http://www.ee.ucl.ac.uk/~rjames/modelling/constant-order/oned/}."""
+        """Solve the 1D Oseen-Frank + electrostatic BVP (using scikits.bvp1lg if installed,
+        falling back to scipy.integrate.solve_bvp)."""
 
-        from scikits.bvp1lg import colnew  # type: ignore
+        if self.lc.K11 <= 0 or self.lc.K22 <= 0 or self.lc.K33 <= 0:
+            raise ValueError(
+                "LiquidCrystal elastic constants (K11, K22, K33) must be positive to solve the BVP."
+            )
 
-        boundary_points = numpy.array([0, 0, 0, 1, 1, 1])
-        tol = 1e-6 * numpy.ones_like(boundary_points)
-        degrees = numpy.array([2, 2, 2])
+        try:
+            from scikits.bvp1lg import colnew  # type: ignore
+        except ImportError:
+            colnew = None
 
-        solution = colnew.solve(
-            boundary_points,
-            degrees,
-            self.__ode_3k,
-            self.__bc_nosplay,
-            is_linear=False,
-            initial_guess=self.__ic_nosplay,
-            tolerances=tol,
-            vectorized=True,
-            maximum_mesh_size=1000,
+        if colnew is not None:
+            boundary_points = numpy.array([0, 0, 0, 1, 1, 1])
+            tol = 1e-6 * numpy.ones_like(boundary_points)
+            degrees = numpy.array([2, 2, 2])
+
+            self.bvp_solution = colnew.solve(
+                boundary_points,
+                degrees,
+                self.__ode_3k,
+                self.__bc_nosplay,
+                is_linear=False,
+                initial_guess=self.__ic_nosplay,
+                tolerances=tol,
+                vectorized=True,
+                maximum_mesh_size=1000,
+            )
+            return
+
+        import scipy.integrate
+
+        z_mesh = numpy.linspace(0.0, 1.0, 51)
+        y_init, _ = self.__ic_nosplay(z_mesh)
+
+        def _ode_first_order(z, y):
+            ddt, ddp, ddu = self.__ode_3k(z, y)
+            return numpy.vstack([y[1], ddt, y[3], ddp, y[5], ddu])
+
+        def _bc_func(ya, yb):
+            return self.__bc_nosplay(numpy.column_stack([ya, ya, ya, yb, yb, yb]))
+
+        res = scipy.integrate.solve_bvp(
+            _ode_first_order, _bc_func, z_mesh, y_init, tol=1e-6, max_nodes=2000
         )
+        if not res.success:
+            raise RuntimeError(
+                f"LiquidCrystalCell BVP failed to converge: {res.message}"
+            )
 
-        self.bvp_solution = solution
+        class _SciPyBVPSolution:
+            mesh = res.x
+
+            def __call__(self, z):
+                return res.sol(z).T
+
+        self.bvp_solution = _SciPyBVPSolution()
 
     def get_parameters(self, z=None):
         """Inspiration from:
@@ -621,25 +671,47 @@ class LiquidCrystalCell:
         y = [self.voltage]
         angles = interp2(x, y, data_x, data_y, data[1:, :])
 
-        return angles.squeeze()
+        return numpy.real(angles.squeeze())
 
     def _get_angles_from_bvp(self):
+        z_ = self.normalized_sample_points
+        if self.voltage == 0:
+            has_elastic = self.lc.K11 > 0 and self.lc.K22 > 0 and self.lc.K33 > 0
+            if (
+                (self.totaltwist == 0 and self.lc.q0 == 0)
+                or self.pretilt == 0
+                or not has_elastic
+            ):
+                theta = numpy.full_like(
+                    z_, EMpy.utils.rad2deg(numpy.pi / 2.0 - self.pretilt), dtype=float
+                )
+                phi = EMpy.utils.rad2deg(self.totaltwist * z_)
+                return theta, phi
+            self.__apply_tension()
+            _, theta, phi, _ = self.get_parameters(z_)
+            return theta, phi
+
         # solve bvp
         self.__apply_tension()
-        z_ = self.normalized_sample_points
-        z, theta, phi, u = self.get_parameters(z_)
+        _, theta, phi, _ = self.get_parameters(z_)
 
-        return theta
+        return theta, phi
 
     def createMultilayer(self):
         """Split the cell in nlayers homogeneous layers."""
 
         m = []
-        for a, t in zip(EMpy.utils.deg2rad(self.angles), self.tlc):
+        for a, p, t in zip(
+            EMpy.utils.deg2rad(self.angles),
+            EMpy.utils.deg2rad(self.twists),
+            self.tlc,
+        ):
             epsT = EMpy.materials.EpsilonTensor(
                 epsilon_tensor_const=EMpy.utils.euler_rotate(
-                    numpy.diag([self.lc.nE, self.lc.nO, self.lc.nO]) ** 2,
-                    0.0,
+                    numpy.diag(
+                        numpy.asarray([self.lc.nE, self.lc.nO, self.lc.nO]) ** 2
+                    ),
+                    p,
                     numpy.pi / 2.0,
                     numpy.pi / 2.0 - a,
                 )
@@ -647,14 +719,16 @@ class LiquidCrystalCell:
                 epsilon_tensor_known={
                     0: EMpy.utils.euler_rotate(
                         numpy.diag(
-                            [
-                                self.lc.nE_electrical,
-                                self.lc.nO_electrical,
-                                self.lc.nO_electrical,
-                            ]
-                        )
-                        ** 2,
-                        0.0,
+                            numpy.asarray(
+                                [
+                                    self.lc.nE_electrical,
+                                    self.lc.nO_electrical,
+                                    self.lc.nO_electrical,
+                                ]
+                            )
+                            ** 2
+                        ),
+                        p,
                         numpy.pi / 2.0,
                         numpy.pi / 2.0 - a,
                     )
@@ -705,24 +779,18 @@ class Multilayer:
         del self.data[i]
 
     def __getitem__(self, i):
-        """Get an item of the list of layers."""
+        """Get an item or slice of the list of layers."""
+        if isinstance(i, slice):
+            return Multilayer(self.data[i])
         return self.data[i]
-
-    def __getslice__(self, i, j):
-        """Get a Multilayer from a slice of layers."""
-        return Multilayer(self.data[i:j])
 
     def __len__(self):
         """Return the number of layers."""
         return len(self.data)
 
     def __setitem__(self, i, item):
-        """Set an item of the list of layers."""
+        """Set an item or slice of the list of layers."""
         self.data[i] = item
-
-    def __setslice__(self, i, j, other):
-        """Set a slice of layers."""
-        self.data[i:j] = other
 
     def append(self, item):
         """Append a layer to the layers list."""
@@ -776,7 +844,7 @@ class Multilayer:
         m = self.simplify()
         ctot_1 = 0.0
         for l in m:
-            if numpy.isfinite(l.thickness):
+            if numpy.isfinite(l.thickness) and l.thickness > 0:
                 ctot_1 += 1.0 / l.capacitance(area, wl)
         return 1.0 / ctot_1
 
@@ -817,8 +885,8 @@ class Slice(Multilayer):
         # ytot = sum([l.thickness for l in self])
         for l in self:
             y1 = y0 + l.thickness
-            n = l.mat.n(wl)
-            r = 1.0 - (1.0 * (n - nmin) / (nmax - nmin))
+            n = numpy.real(numpy.asarray(l.mat.n(wl)).item())
+            r = 0.5 if nmax == nmin else 1.0 - (n - nmin) / (nmax - nmin)
             plt.fill(
                 [x0, x1, x1, x0], [y0, y0, y1, y1], ec="yellow", fc=(r, r, r), alpha=0.5
             )
@@ -896,7 +964,7 @@ class CrossSection(list):
 
     def _epsfunc(self, x, y, wl):
         if numpy.isscalar(x) and numpy.isscalar(y):
-            return self.find_slice(x).find_layer(y).mat.n(wl) ** 2
+            return numpy.asarray(self.find_slice(x).find_layer(y).mat.n(wl)).item() ** 2
         else:
             raise ValueError("only scalars, please!")
 
@@ -909,7 +977,7 @@ class CrossSection(list):
 
     def plot(self, wl=1.55e-6):
         x0 = 0
-        ns = [[l.mat.n(wl) for l in s] for s in self]
+        ns = [[numpy.real(numpy.asarray(l.mat.n(wl)).item()) for l in s] for s in self]
         nmax = max(max(ns))
         nmin = min(min(ns))
         for s in self:
@@ -1000,7 +1068,7 @@ def euler_rotate(X, phi, theta, psi):
             ],
         ]
     )
-    return numpy.dot(A, numpy.dot(X, scipy.linalg.inv(A)))
+    return numpy.dot(A, numpy.dot(X, numpy.linalg.inv(A)))
 
 
 def snell(theta_inc, n):
@@ -1014,10 +1082,29 @@ def snell(theta_inc, n):
     theta = 1D numpy.array.
     """
 
-    theta = numpy.zeros_like(n)
+    n_arr = numpy.asarray(n)
+    is_complex_input = numpy.iscomplexobj(n_arr) or numpy.iscomplexobj(theta_inc)
+    n_c = numpy.asarray(n_arr, dtype=complex)
+    sin_inc = n_c[0] * numpy.sin(theta_inc)
+
+    sin_theta = numpy.empty_like(n_c)
+    sin_theta[0] = numpy.sin(theta_inc)
+    sin_theta[1:] = sin_inc / n_c[1:]
+
+    theta = numpy.arcsin(sin_theta)
     theta[0] = theta_inc
-    for i in range(1, n.size):
-        theta[i] = numpy.arcsin(n[i - 1] / n[i] * numpy.sin(theta[i - 1]))
+
+    # Enforce passive forward (+z) branch under exp(+i*w*t - i*k*z) with branch cut on
+    # the positive imaginary axis of qz**2 (Re(qz) - Im(qz) >= 0): selects Re(qz) >= 0 for
+    # propagating waves (including complex kx from a lossy incident medium as kappa_0 -> 0+)
+    # and Im(qz) < 0 for evanescent / TIR waves.
+    for i in range(1, n_c.size):
+        qz = n_c[i] * numpy.cos(theta[i])
+        if qz.real - qz.imag < 0 or (qz.real - qz.imag == 0 and qz.real < 0):
+            theta[i] = numpy.pi - theta[i]
+
+    if not is_complex_input and numpy.all(numpy.abs(theta.imag) == 0):
+        return theta.real
     return theta
 
 
@@ -1049,19 +1136,17 @@ def group_delay_and_dispersion(wls, y):
         raise ValueError("wls and y must have the same shape.")
 
     f = EMpy.constants.c / wls
-
-    df = numpy.diff(f)
-    toPSNM = 1e12 / 1e9
-    cnmps = EMpy.constants.c / toPSNM
+    df = numpy.diff(f, axis=-1)
 
     # phase
-    phi = numpy.unwrap(4.0 * numpy.angle(y)) / 4.0
+    phi = numpy.unwrap(numpy.angle(y), axis=-1)
 
-    # group delay
-    tau = -0.5 / numpy.pi * numpy.diff(phi) / df * 1e12
+    # group delay in ps: tau = -d(phi)/d(omega) = -(1 / 2*pi) * d(phi)/df
+    tau = -0.5 / numpy.pi * numpy.diff(phi, axis=-1) / df * 1e12
 
-    # dispersion in ps/nm
-    Dpsnm = -0.5 / numpy.pi / cnmps * f[1:-1] ** 2 * numpy.diff(phi, 2) / df[0:-1] ** 2
+    # dispersion in ps/nm: D = d(tau)/d(wl_nm) evaluated across midpoint wavelengths
+    wls_mid = 0.5 * (wls[..., :-1] + wls[..., 1:])
+    Dpsnm = numpy.diff(tau, axis=-1) / (numpy.diff(wls_mid, axis=-1) * 1e9)
 
     return phi, tau, Dpsnm
 
@@ -1071,7 +1156,8 @@ def rix2losses(n, wl):
     complex refractive index.  Power goes as: P = P0 exp(-alpha*z)."""
     nr = numpy.real(n)
     ni = numpy.imag(n)
-    alpha = 4 * numpy.pi * ni / wl
+    # EMpy uses exp(+i*omega*t - i*k*z) / n = nr - 1j * k, so loss corresponds to imag(n) < 0.
+    alpha = -4 * numpy.pi * ni / wl
     alpha_cm1 = alpha / 100.0
     alpha_dBcm1 = 10 * numpy.log10(numpy.exp(1)) * alpha_cm1
     return nr, ni, alpha, alpha_cm1, alpha_dBcm1
@@ -1118,63 +1204,85 @@ def f2wl(f0, df):
 
 
 def find_peaks(x, y, threshold=1e-6):
-    # find peaks' candidates
-    dy = numpy.diff(y)
-    ddy = numpy.diff(numpy.sign(dy))
-    # idxs = numpy.where(ddy < 0)[0] + 1
-    idxs = numpy.where(ddy < 0)
+    x = numpy.asarray(x)
+    y = numpy.asarray(y)
 
-    if len(idxs) == 0:
-        # there is only 1 min in f, so the max is on either boundary
+    # find interior local maxima (including multi-sample flat-top plateaus,
+    # while ignoring monotonic staircase inflections)
+    n_pts = len(y)
+    plateaus = []
+    left = 1
+    while left < n_pts - 1:
+        right = left
+        while right + 1 < n_pts and y[right + 1] == y[left]:
+            right += 1
+        if right < n_pts - 1 and y[left] > y[left - 1] and y[right] > y[right + 1]:
+            plateaus.append((left, right))
+        left = right + 1
+
+    if len(plateaus) == 0:
+        # there is no interior local max, so the max is on a boundary
         # get the max and set FWHM = 0
-        idx = numpy.argmax(y)
-        p = Peak(x[idx], y[idx], idx, x[idx], y[idx], x[idx], x[idx])
+        idx = int(numpy.argmax(y))
+        x_b = float(x[idx])
+        y_b = float(y[idx])
+        p = Peak(x_b, y_b, idx, x_b, y_b, x_b, x_b)
         # return a list of one element
         return [p]
 
     # refine search with splines
     tck = scipy.interpolate.splrep(x, y)
 
-    # look for zero derivative
-    def absdy(x_):
-        return numpy.abs(scipy.interpolate.splev(x_, tck, der=1))
+    def neg_spline(x_):
+        return -float(scipy.interpolate.splev(x_, tck))
 
     peaks = []
-    for idx in idxs:
-        # look around the candidate
-        xtol = (x.max() - x.min()) * 1e-6
-        xopt = scipy.optimize.fminbound(
-            absdy, x[idx - 1], x[idx + 1], xtol=xtol, disp=False
-        )
-        yopt = scipy.interpolate.splev(xopt, tck)
+    xtol = float(x.max() - x.min()) * 1e-6
+    for left, right in plateaus:
+        idx_i = (left + right) // 2
+        if right - left >= 2:
+            # Wide flat plateau (>= 3 equal samples): cubic spline exhibits
+            # symmetric shoulder overshoot around a mid-plateau dip, so use
+            # the exact plateau midpoint and height directly.
+            xopt = 0.5 * (float(x[left]) + float(x[right]))
+            yopt = float(y[idx_i])
+        else:
+            xopt = float(
+                scipy.optimize.fminbound(
+                    neg_spline, x[left - 1], x[right + 1], xtol=xtol, disp=False
+                )
+            )
+            yopt = float(scipy.interpolate.splev(xopt, tck))
+        if any(abs(xopt - prev.x) <= max(10.0 * xtol, 1e-12) for prev in peaks):
+            continue
 
         if yopt > threshold * y.max():
             # FWHM
             tckFWHM = scipy.interpolate.splrep(x, y - 0.5 * yopt)
             roots = scipy.interpolate.sproot(tckFWHM)
 
-            idxFWHM = numpy.searchsorted(roots, xopt)
+            idxFWHM = int(numpy.searchsorted(roots, xopt))
             if idxFWHM <= 0:
-                xFWHM_1 = x[0]
+                xFWHM_1 = float(x[0])
             else:
-                xFWHM_1 = roots[idxFWHM - 1]
+                xFWHM_1 = float(roots[idxFWHM - 1])
             if idxFWHM >= len(roots):
-                xFWHM_2 = x[-1]
+                xFWHM_2 = float(x[-1])
             else:
-                xFWHM_2 = roots[idxFWHM]
+                xFWHM_2 = float(roots[idxFWHM])
 
-            p = Peak(xopt, yopt, idx, x[idx], y[idx], xFWHM_1, xFWHM_2)
+            p = Peak(
+                xopt,
+                yopt,
+                idx_i,
+                float(x[idx_i]),
+                float(y[idx_i]),
+                xFWHM_1,
+                xFWHM_2,
+            )
             peaks.append(p)
 
-    def cmp_y(x_, y_):
-        # to sort in descending order
-        if x_.y == y_.y:
-            return 0
-        if x_.y > y_.y:
-            return -1
-        return 1
-
-    peaks.sort(cmp=cmp_y)
+    peaks.sort(key=lambda p: p.y, reverse=True)
 
     return peaks
 
@@ -1182,7 +1290,10 @@ def find_peaks(x, y, threshold=1e-6):
 def cond(M):
     """Return the condition number of the 2D array M."""
     svdv = scipy.linalg.svdvals(M)
-    return svdv.max() / svdv.min()
+    smin = svdv.min()
+    if smin == 0:
+        return numpy.inf
+    return svdv.max() / smin
 
 
 def interp2(x, y, xp, yp, fp):
@@ -1292,7 +1403,7 @@ class ProgressBar:
             )
 
         # figure out where to put the percentage, roughly centered
-        percentPlace = (len(self.progBar) / 2) - len(str(percentDone))
+        percentPlace = (len(self.progBar) // 2) - len(str(percentDone))
         percentString = " " + str(percentDone) + "% "
 
         elapsed_time = time.time() - self.start_time

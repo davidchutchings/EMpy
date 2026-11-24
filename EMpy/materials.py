@@ -100,7 +100,10 @@ class RefractiveIndex:
             self.get_rix = partial(self.__from_function, n0_func)
 
         elif n0_known is not None:
-            self.get_rix = partial(self.__from_known, n0_known)
+            if len(n0_known) == 0:
+                raise ValueError("n0_known must not be empty.")
+            self.n0_known = dict(n0_known)
+            self.get_rix = partial(self.__from_known, self.n0_known)
 
         else:
             raise ValueError("Please provide at least one parameter.")
@@ -134,9 +137,28 @@ class RefractiveIndex:
 
     @staticmethod
     def __from_known(n0_known, wls):
-        wls = numpy.atleast_1d(wls)
-        # Note: we should interpolate...
-        return numpy.array([n0_known.get(wl, 0) for wl in wls])
+        wls_arr = numpy.atleast_1d(wls)
+        wls_flat = numpy.real(wls_arr.ravel())
+        ks = numpy.array(sorted(n0_known.keys()), dtype=float)
+        vs = numpy.array([n0_known[k] for k in ks])
+        if ks.size == 1:
+            return numpy.full(wls_arr.shape, vs[0])
+
+        def _interp_extrap(yq):
+            res = numpy.interp(wls_flat, ks, yq)
+            left = wls_flat < ks[0]
+            if numpy.any(left):
+                slope_l = (yq[1] - yq[0]) / (ks[1] - ks[0])
+                res[left] = yq[0] + slope_l * (wls_flat[left] - ks[0])
+            right = wls_flat > ks[-1]
+            if numpy.any(right):
+                slope_r = (yq[-1] - yq[-2]) / (ks[-1] - ks[-2])
+                res[right] = yq[-1] + slope_r * (wls_flat[right] - ks[-1])
+            return res.reshape(wls_arr.shape)
+
+        if numpy.iscomplexobj(vs):
+            return _interp_extrap(numpy.real(vs)) + 1j * _interp_extrap(numpy.imag(vs))
+        return _interp_extrap(vs.astype(float))
 
     def __call__(self, wls):
         return self.get_rix(wls)
@@ -170,12 +192,14 @@ class IsotropicMaterial(Material):
     In all the member functions, wls must be an ndarray.
     """
 
-    def __init__(
-        self, name="", n0=RefractiveIndex(n0_const=1.0), toc=ThermalOpticCoefficient()
-    ):
+    def __init__(self, name="", n0=None, toc=None):
         """Set name, default temperature, refractive index and TOC
         (thermal optic coefficient)."""
         Material.__init__(self, name)
+        if n0 is None:
+            n0 = RefractiveIndex(n0_const=1.0)
+        if toc is None:
+            toc = ThermalOpticCoefficient()
         self.n0 = n0
         self.toc = toc
 
@@ -209,9 +233,9 @@ class IsotropicMaterial(Material):
 
 
 class EpsilonTensor:
-    def __init__(
-        self, epsilon_tensor_const=eps0 * numpy.eye(3), epsilon_tensor_known=None
-    ):
+    def __init__(self, epsilon_tensor_const=None, epsilon_tensor_known=None):
+        if epsilon_tensor_const is None:
+            epsilon_tensor_const = eps0 * numpy.eye(3)
         if epsilon_tensor_known is None:
             epsilon_tensor_known = {}
         self.epsilon_tensor_const = epsilon_tensor_const
@@ -220,10 +244,18 @@ class EpsilonTensor:
     def __call__(self, wls):
         """Return the epsilon tensor as a [3 x 3 x wls.size] matrix."""
         wls = numpy.atleast_1d(wls)
-        if wls.size == 1:
-            if wls.item() in self.epsilon_tensor_known:
-                return self.epsilon_tensor_known[wls.item()][:, :, numpy.newaxis]
-        return self.epsilon_tensor_const[:, :, numpy.newaxis] * numpy.ones_like(wls)
+        if not self.epsilon_tensor_known:
+            return self.epsilon_tensor_const[:, :, numpy.newaxis] * numpy.ones_like(wls)
+        dtype = numpy.result_type(
+            self.epsilon_tensor_const,
+            *(numpy.asarray(v).dtype for v in self.epsilon_tensor_known.values()),
+        )
+        out = numpy.empty((3, 3, wls.size), dtype=dtype)
+        for i, wl in enumerate(wls.ravel()):
+            out[:, :, i] = self.epsilon_tensor_known.get(
+                wl.item(), self.epsilon_tensor_const
+            )
+        return out
 
 
 class AnisotropicMaterial(Material):
@@ -234,9 +266,11 @@ class AnisotropicMaterial(Material):
 
     """
 
-    def __init__(self, name="", epsilon_tensor=EpsilonTensor()):
+    def __init__(self, name="", epsilon_tensor=None):
         """Set name and default epsilon tensor."""
         Material.__init__(self, name)
+        if epsilon_tensor is None:
+            epsilon_tensor = EpsilonTensor()
         self.epsilonTensor = epsilon_tensor
 
     @staticmethod
@@ -262,11 +296,11 @@ Si = IsotropicMaterial(
     toc=ThermalOpticCoefficient((-1.49e-10, 3.47e-7, 9.48e-5)),
 )
 
-# SiO2
+# SiO2 (fused silica dn/dT ~ 1.0e-5 K^-1 near 1.55 um, Leviton & Frey 2006)
 SiO2 = IsotropicMaterial(
     name="Silica",
     n0=RefractiveIndex(n0_const=1.446),
-    toc=ThermalOpticCoefficient((1.1e-4,)),
+    toc=ThermalOpticCoefficient((1.0e-5,)),
 )
 
 # BK7 glass (see http://en.wikipedia.org/wiki/Sellmeier_equation)

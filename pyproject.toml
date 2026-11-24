@@ -6,12 +6,24 @@ build-backend = "setuptools.build_meta"
 name = "ElectroMagneticPython"
 dynamic = ["version"]
 requires-python = ">=3.10"
-description = "EMpy - ElectroMagnetic Python"
+description = "EMpy (ElectroMagnetic Python) — Computational electromagnetics and photonics suite for transfer matrices, RCWA gratings, waveguide mode solvers, optical ring resonators, liquid crystals, and vector diffraction."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Lorenzo Bolla", email = "code@lbolla.info" }]
-urls = { Homepage = "http://lbolla.github.io/EMpy/", Repository = "https://github.com/lbolla/EMpy" }
+keywords = [
+  "electromagnetics",
+  "photonics",
+  "optics",
+  "ring-resonator",
+  "rcwa",
+  "transfer-matrix",
+  "mode-solver",
+  "waveguide",
+  "liquid-crystal",
+  "simulation",
+]
+urls = { Homepage = "https://lbolla.github.io/EMpy/", Documentation = "https://lbolla.github.io/EMpy/", Repository = "https://github.com/lbolla/EMpy", Changelog = "https://github.com/lbolla/EMpy/blob/master/CHANGELOG.md", Issues = "https://github.com/lbolla/EMpy/issues", Funding = "https://github.com/sponsors/lbolla" }
 classifiers = [
   "Development Status :: 5 - Production/Stable",
   "Environment :: Console",
@@ -22,7 +34,7 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Physics",
 ]
 
-dependencies = ["numpy>=1.18", "scipy>=1.7", "matplotlib>=3.1"]
+dependencies = ["numpy>=2.1", "scipy>=1.13", "matplotlib>=3.8.4"]
 
 [dependency-groups]
 dev = [

@@ -27,6 +27,9 @@ jobs:
     - name: Install the project
       run: uv sync --locked --all-extras --dev
 
+    - name: Check formatting with black
+      run: uv run black --check EMpy tests examples scripts
+
     - name: Lint with flake8
       run: uv run flake8 EMpy tests examples scripts
 
@@ -38,3 +41,34 @@ jobs:
 
     - name: Run tests
       run: uv run pytest
+
+    - name: Smoke test examples
+      if: matrix.python-version == '3.12'
+      env:
+        MPLBACKEND: Agg
+      run: |
+        uv run python -c '
+        import glob, runpy
+        import matplotlib.pyplot as plt
+        plt.show = lambda *a, **k: None
+        paths = sorted(glob.glob("examples/**/ex_*.py", recursive=True))
+        assert len(paths) == 22, f"Expected 22 examples, found {len(paths)}"
+        for path in paths:
+            runpy.run_path(path, run_name="__main__")
+            plt.close("all")
+        '
+
+  lowest-direct:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Install uv and set the Python version
+      uses: astral-sh/setup-uv@v7
+      with:
+        python-version: "3.11"
+
+    - name: Run tests with lowest-direct dependencies
+      run: uv run --isolated --resolution lowest-direct pytest

@@ -21,7 +21,6 @@ from functools import reduce
 
 from matplotlib import pyplot as plt
 import numpy
-import scipy
 import scipy.optimize
 
 import EMpy.utils
@@ -238,21 +237,21 @@ class FMMMode1dy(FMMMode1d):
         for iU in range(len(self.U) - 1):
             k = self.k[iU]
             sl = self.sl[iU]
+            sr = self.sr[iU]
             al = self.al[iU]
             Ul = self.U[iU]
             Ur = self.U[iU + 1]
             idx = numpy.where((Ul <= y) & (y <= Ur))
             yy = y[idx] - Ul
-            f[idx] = sl * numpy.cos(k * yy) + al * sinxsux(k * yy) * yy
+            f[idx], _ = _eval_segment(k, sl, sr, al, Ur - Ul, yy)
         return f
 
     def plot(self, y):
         f = self.eval(y)
-        plt.plot(y, numpy.real(f), y, numpy.imag(y))
+        plt.plot(y, numpy.real(f), y, numpy.imag(f))
         plt.legend(("real", "imag"))
         plt.xlabel("y")
         plt.ylabel("mode1d")
-        plt.show()
 
     def __str__(self):
         return (
@@ -343,10 +342,11 @@ class FMMMode2d(Mode):
         cBzTM = numpy.zeros_like(ExTE)
 
         for mx, slice in enumerate(self.slicesx):
-            idx = numpy.where((slice.x1 <= x) & (x < slice.x2))
+            if mx == len(self.slicesx) - 1:
+                idx = numpy.where((slice.x1 <= x) & (x <= slice.x2))
+            else:
+                idx = numpy.where((slice.x1 <= x) & (x < slice.x2))
             x2 = x[idx] - slice.x1
-            x1 = slice.x2 - x[idx]
-            dx = slice.x2 - slice.x1
 
             for n in range(nmodi):
                 fi = slice.modih[n].eval(y)
@@ -356,33 +356,29 @@ class FMMMode2d(Mode):
                 psisueps = sueps(slice.modie[n]).eval(y)
                 psidotsueps = sueps(dot(slice.modie[n])).eval(y)
 
+                # Evaluate u(x) and du/dx consistently: use left-endpoint (sl, al)
+                # for oscillatory/weakly-evanescent slices (|Im(k*dx)| <= 1, avoiding
+                # 0/0 when sin(k*dx) == 0), and symmetric two-endpoint (sl, sr) decaying
+                # exponentials for evanescent slices (|Im(k*dx)| > 1) to avoid
+                # O(exp(|Im(k*dx)|)) catastrophic cancellation.
+                dx_slice = slice.x2 - slice.x1
                 kfh = self.modih[n].k[mx]
-                kxh = scipy.sqrt(kfh**2 - kz**2)
-                sl = self.modih[n].sl[mx] * (k0 / kfh) ** 2
-                al = self.modih[n].al[mx]
-                sr = self.modih[n].sr[mx] * (k0 / kfh) ** 2
-                ar = self.modih[n].ar[mx]
-
-                uh[n, idx] = (
-                    numpy.sin(kxh * x1) * sl + numpy.sin(kxh * x2) * sr
-                ) / numpy.sin(kxh * dx)
-                udoth[n, idx] = (
-                    numpy.sin(kxh * x1) * al + numpy.sin(kxh * x2) * ar
-                ) / numpy.sin(kxh * dx)
+                kxh = numpy.emath.sqrt(kfh**2 - kz**2)
+                slh = self.modih[n].sl[mx] * (k0 / kfh) ** 2
+                srh = self.modih[n].sr[mx] * (k0 / kfh) ** 2
+                alh = self.modih[n].al[mx]
+                uh[n, idx], udoth[n, idx] = _eval_segment(
+                    kxh, slh, srh, alh, dx_slice, x2
+                )
 
                 kfe = self.modie[n].k[mx]
-                kxe = scipy.sqrt(kfe**2 - kz**2)
-                sl = self.modie[n].sl[mx] * (k0 / kfe) ** 2
-                al = self.modie[n].al[mx]
-                sr = self.modie[n].sr[mx] * (k0 / kfe) ** 2
-                ar = self.modie[n].ar[mx]
-
-                ue[n, idx] = (
-                    numpy.sin(kxe * x1) * sl + numpy.sin(kxe * x2) * sr
-                ) / numpy.sin(kxe * dx)
-                udote[n, idx] = (
-                    numpy.sin(kxe * x1) * al + numpy.sin(kxe * x2) * ar
-                ) / numpy.sin(kxe * dx)
+                kxe = numpy.emath.sqrt(kfe**2 - kz**2)
+                sle = self.modie[n].sl[mx] * (k0 / kfe) ** 2
+                sre = self.modie[n].sr[mx] * (k0 / kfe) ** 2
+                ale = self.modie[n].al[mx]
+                ue[n, idx], udote[n, idx] = _eval_segment(
+                    kxe, sle, sre, ale, dx_slice, x2
+                )
 
                 Exsh[:, n] = (kz / k0) * fi
                 Exah[:, n] = 0
@@ -509,14 +505,16 @@ class FMMMode2d(Mode):
         else:
             y = numpy.atleast_1d(y_)
 
-        Ex, Ey, Ez, cBx, cBy, cBz, cSz = self.fields(x, y)
+        Ex, Ey, Ez, cBx, cBy, cBz = self.fields(x, y)
         cSTE = 0.5 * EMpy.utils.trapz2(Ex * numpy.conj(cBy), y, x)
         cSTM = 0.5 * EMpy.utils.trapz2(-Ey * numpy.conj(cBx), y, x)
         return numpy.abs(cSTE) / (numpy.abs(cSTE) + numpy.abs(cSTM))
 
-    def TEfrac(self):
+    def TEfrac(self, x_=None, y_=None):
+        if x_ is not None or y_ is not None:
+            return self.TEfrac_old(x_, y_)
         Sx, Sy = self.__overlap(self)
-        return Sx / (Sx - Sy)
+        return float(numpy.abs(Sx) / (numpy.abs(Sx) + numpy.abs(Sy)))
 
     def overlap_old(self, m, x_=None, y_=None):
         if x_ is None:
@@ -530,10 +528,10 @@ class FMMMode2d(Mode):
 
         Ex, Ey, Ez, cBx, cBy, cBz = self.fields(x, y)
         cSz = self.intensity(x, y)
-        norm = scipy.sqrt(EMpy.utils.trapz2(cSz, y, x))
+        norm = numpy.emath.sqrt(numpy.real(EMpy.utils.trapz2(cSz, y, x)))
         Ex1, Ey1, Ez1, cBx1, cBy1, cBz1 = m.fields(x, y)
         cSz1 = m.intensity(x, y)
-        norm1 = scipy.sqrt(EMpy.utils.trapz2(cSz1, y, x))
+        norm1 = numpy.emath.sqrt(numpy.real(EMpy.utils.trapz2(cSz1, y, x)))
         return 0.5 * EMpy.utils.trapz2(
             Ex / norm * numpy.conj(cBy1 / norm1) - Ey / norm * numpy.conj(cBx1 / norm1),
             y,
@@ -541,241 +539,197 @@ class FMMMode2d(Mode):
         )
 
     def __overlap_old(self, mode):
-        nmodi = len(self.modie)
-        k0 = 2.0 * numpy.pi / self.slicesx[0].wl
-        kz = self.keff
-
-        Sx = 0j
-        Sy = 0j
-
-        for mx, slice in enumerate(self.slicesx):
-            for n1 in range(nmodi):
-                phi_n1 = slice.modih[n1]
-                # phidot_n1 = dot(phi_n1)
-
-                psi_n1 = slice.modie[n1]
-                psisueps_n1 = sueps(psi_n1)
-                psidotsueps_n1 = sueps(dot(psi_n1))
-
-                uh_n1 = copy.deepcopy(self.modih[n1])
-                # reduce to a single slice
-                kfh_n1 = uh_n1.k[mx]
-                uh_n1.k = numpy.atleast_1d(scipy.sqrt(kfh_n1**2 - kz**2))
-                uh_n1.sl = numpy.atleast_1d(uh_n1.sl[mx] * (k0 / kfh_n1) ** 2)
-                uh_n1.al = numpy.atleast_1d(uh_n1.al[mx])
-                uh_n1.sr = numpy.atleast_1d(uh_n1.sr[mx] * (k0 / kfh_n1) ** 2)
-                uh_n1.ar = numpy.atleast_1d(uh_n1.ar[mx])
-                uh_n1.U = numpy.atleast_1d(uh_n1.U[mx : mx + 2])
-                # uhdot_n1 = dot(uh_n1)
-
-                ue_n1 = copy.deepcopy(self.modie[n1])
-                # reduce to a single slice
-                kfe_n1 = ue_n1.k[mx]
-                ue_n1.k = numpy.atleast_1d(scipy.sqrt(kfe_n1**2 - kz**2))
-                ue_n1.sl = numpy.atleast_1d(ue_n1.sl[mx] * (k0 / kfe_n1) ** 2)
-                ue_n1.al = numpy.atleast_1d(ue_n1.al[mx])
-                ue_n1.sr = numpy.atleast_1d(ue_n1.sr[mx] * (k0 / kfe_n1) ** 2)
-                ue_n1.ar = numpy.atleast_1d(ue_n1.ar[mx])
-                ue_n1.U = numpy.atleast_1d(ue_n1.U[mx : mx + 2])
-                uedot_n1 = dot(ue_n1)
-
-                for n2 in range(nmodi):
-                    phi_n2 = mode.slicesx[mx].modih[n2]
-                    phidot_n2 = dot(phi_n2)
-
-                    psi_n2 = mode.slicesx[mx].modie[n2]
-                    # psisueps_n2 = sueps(psi_n2)
-                    # psidotsueps_n2 = sueps(dot(psi_n2))
-
-                    uh_n2 = copy.deepcopy(mode.modih[n2])
-                    # reduce to a single slice
-                    kfh_n2 = uh_n2.k[mx]
-                    uh_n2.k = numpy.atleast_1d(scipy.sqrt(kfh_n2**2 - kz**2))
-                    uh_n2.sl = numpy.atleast_1d(uh_n2.sl[mx] * (k0 / kfh_n2) ** 2)
-                    uh_n2.al = numpy.atleast_1d(uh_n2.al[mx])
-                    uh_n2.sr = numpy.atleast_1d(uh_n2.sr[mx] * (k0 / kfh_n2) ** 2)
-                    uh_n2.ar = numpy.atleast_1d(uh_n2.ar[mx])
-                    uh_n2.U = numpy.atleast_1d(uh_n2.U[mx : mx + 2])
-                    uhdot_n2 = dot(uh_n2)
-
-                    ue_n2 = copy.deepcopy(mode.modie[n2])
-                    # reduce to a single slice
-                    kfe_n2 = ue_n2.k[mx]
-                    ue_n2.k = numpy.atleast_1d(scipy.sqrt(kfe_n2**2 - kz**2))
-                    ue_n2.sl = numpy.atleast_1d(ue_n2.sl[mx] * (k0 / kfe_n2) ** 2)
-                    ue_n2.al = numpy.atleast_1d(ue_n2.al[mx])
-                    ue_n2.sr = numpy.atleast_1d(ue_n2.sr[mx] * (k0 / kfe_n2) ** 2)
-                    ue_n2.ar = numpy.atleast_1d(ue_n2.ar[mx])
-                    ue_n2.U = numpy.atleast_1d(ue_n2.U[mx : mx + 2])
-                    # uedot_n2 = dot(ue_n2)
-
-                    Sx += kz * kfh_n2**2 / k0**3 * scalarprod(
-                        uh_n1, uh_n2
-                    ) * scalarprod(phi_n1, phi_n2) - kfh_n2**2 / k0**4 * scalarprod(
-                        uedot_n1, uh_n2
-                    ) * scalarprod(
-                        psidotsueps_n1, phi_n2
-                    )
-                    Sy += kfe_n1**2 * kz / k0**3 * scalarprod(
-                        ue_n1, ue_n2
-                    ) * scalarprod(
-                        psisueps_n1, psi_n2
-                    ) + kfe_n1**2 / k0**4 * scalarprod(
-                        ue_n1, uhdot_n2
-                    ) * scalarprod(
-                        psisueps_n1, phidot_n2
-                    )
-
-        return (Sx, Sy)
+        return self.__overlap(mode)
 
     def __overlap(self, mode):
-        nmodi = len(self.modie)
-        k0 = 2.0 * numpy.pi / self.slicesx[0].wl
-        kz = self.keff
+        """Analytical z-Poynting components (Sx, Sy) of 0.5 * int (E_1 x cB_2^*)_z dx dy.
+
+        Notes:
+        - Ey in eval() already carries a minus sign (-kfe^2/k0^2 * psi/eps * ue),
+          so +Sy = 0.5 * int (-Ey_1 * cBx_2^*) dx dy and total overlap is Sx + Sy.
+        - Uses self.keff for mode 1 and mode.keff (conjugated where appropriate)
+          for mode 2, conjugating mode 2's 1D factors via _conj_mode1d.
+        - Refines onto the common (Ux, Uy) mesh so waveguides with distinct slice
+          widths or layer thicknesses integrate analytically on smooth sub-cells.
+        """
+        nmodi1 = len(self.modie)
+        nmodi2 = len(mode.modie)
+        k0_1 = 2.0 * numpy.pi / self.slicesx[0].wl
+        k0_2 = 2.0 * numpy.pi / mode.slicesx[0].wl
+        kz1 = self.keff
+        kz2 = mode.keff
+
+        Ux1 = numpy.asarray(self.slicesx[0].Ux, dtype=float)
+        Ux2 = numpy.asarray(mode.slicesx[0].Ux, dtype=float)
+        Uy1 = numpy.asarray(self.slicesx[0].Uy, dtype=float)
+        Uy2 = numpy.asarray(mode.slicesx[0].Uy, dtype=float)
+
+        x_min = max(Ux1[0], Ux2[0])
+        x_max = min(Ux1[-1], Ux2[-1])
+        y_min = max(Uy1[0], Uy2[0])
+        y_max = min(Uy1[-1], Uy2[-1])
+        if x_max <= x_min or y_max <= y_min:
+            return (0j, 0j)
+
+        Ux_common = numpy.unique(numpy.r_[Ux1, Ux2])
+        Ux_common = Ux_common[(Ux_common >= x_min) & (Ux_common <= x_max)]
+        Uy_common = numpy.unique(numpy.r_[Uy1, Uy2])
+        Uy_common = Uy_common[(Uy_common >= y_min) & (Uy_common <= y_max)]
 
         Sx = 0j
         Sy = 0j
 
-        for mx, slice in enumerate(self.slicesx):
+        for ix in range(len(Ux_common) - 1):
+            xa = Ux_common[ix]
+            xb = Ux_common[ix + 1]
+            if xb <= xa:
+                continue
+            x_mid = 0.5 * (xa + xb)
+            mx1 = int(
+                numpy.clip(
+                    numpy.searchsorted(Ux1, x_mid, side="right") - 1,
+                    0,
+                    len(self.slicesx) - 1,
+                )
+            )
+            mx2 = int(
+                numpy.clip(
+                    numpy.searchsorted(Ux2, x_mid, side="right") - 1,
+                    0,
+                    len(mode.slicesx) - 1,
+                )
+            )
+            slice1 = self.slicesx[mx1]
+            slice2 = mode.slicesx[mx2]
+            U_sub_x = numpy.array([xa, xb], dtype=float)
+
             phi_n1s = []
-            phidot_n1s = []
-            psi_n1s = []
-            psisueps_n1s = []
             psidotsueps_n1s = []
+            psisueps_n1s = []
             uh_n1s = []
-            uhdot_n1s = []
             ue_n1s = []
             uedot_n1s = []
             kfe_n1s = []
-            kfh_n1s = []
 
-            phi_n2s = []
-            phidot_n2s = []
-            psi_n2s = []
-            psisueps_n2s = []
-            psidotsueps_n2s = []
-            uh_n2s = []
-            uhdot_n2s = []
-            ue_n2s = []
-            uedot_n2s = []
-            kfe_n2s = []
+            for n1 in range(nmodi1):
+                phi_n1 = _refine_mode1d(slice1.modih[n1], Uy_common)
+                psi_n1 = slice1.modie[n1]
+                psisueps_n1 = _refine_mode1d(sueps(psi_n1), Uy_common)
+                psidotsueps_n1 = _refine_mode1d(sueps(dot(psi_n1)), Uy_common)
+
+                uh_n1_full, _ = _slice_mode1dx(self.modih[n1], mx1, k0_1, kz1)
+                uh_n1 = _refine_mode1d(uh_n1_full, U_sub_x)
+
+                ue_n1_full, kfe_n1 = _slice_mode1dx(self.modie[n1], mx1, k0_1, kz1)
+                ue_n1 = _refine_mode1d(ue_n1_full, U_sub_x)
+                uedot_n1 = dot(ue_n1)
+
+                phi_n1s.append(phi_n1)
+                psisueps_n1s.append(psisueps_n1)
+                psidotsueps_n1s.append(psidotsueps_n1)
+                uh_n1s.append(uh_n1)
+                ue_n1s.append(ue_n1)
+                uedot_n1s.append(uedot_n1)
+                kfe_n1s.append(kfe_n1)
+
+            phi_n2s_c = []
+            phidot_n2s_c = []
+            psi_n2s_c = []
+            uh_n2s_c = []
+            uhdot_n2s_c = []
+            ue_n2s_c = []
             kfh_n2s = []
 
-            for n1 in range(nmodi):
-                phi_n1 = slice.modih[n1]
-                phi_n1s.append(phi_n1)
-                phidot_n1s.append(dot(phi_n1))
+            for n2 in range(nmodi2):
+                phi_n2 = _refine_mode1d(slice2.modih[n2], Uy_common)
+                phidot_n2 = dot(phi_n2)
+                psi_n2 = _refine_mode1d(slice2.modie[n2], Uy_common)
 
-                psi_n1 = slice.modie[n1]
-                psi_n1s.append(psi_n1)
-                psisueps_n1s.append(sueps(psi_n1))
-                psidotsueps_n1s.append(sueps(dot(psi_n1)))
+                uh_n2_full, kfh_n2 = _slice_mode1dx(mode.modih[n2], mx2, k0_2, kz2)
+                uh_n2 = _refine_mode1d(uh_n2_full, U_sub_x)
+                uhdot_n2 = dot(uh_n2)
 
-                uh_n1 = copy.deepcopy(self.modih[n1])
-                # reduce to a single slice
-                kfh_n1 = uh_n1.k[mx]
-                kfh_n1s.append(kfh_n1)
-                uh_n1.k = numpy.atleast_1d(scipy.sqrt(kfh_n1**2 - kz**2))
-                uh_n1.sl = numpy.atleast_1d(uh_n1.sl[mx] * (k0 / kfh_n1) ** 2)
-                uh_n1.al = numpy.atleast_1d(uh_n1.al[mx])
-                uh_n1.sr = numpy.atleast_1d(uh_n1.sr[mx] * (k0 / kfh_n1) ** 2)
-                uh_n1.ar = numpy.atleast_1d(uh_n1.ar[mx])
-                uh_n1.U = numpy.atleast_1d(uh_n1.U[mx : mx + 2])
-                uh_n1s.append(uh_n1)
-                uhdot_n1s.append(dot(uh_n1))
+                ue_n2_full, _ = _slice_mode1dx(mode.modie[n2], mx2, k0_2, kz2)
+                ue_n2 = _refine_mode1d(ue_n2_full, U_sub_x)
 
-                ue_n1 = copy.deepcopy(self.modie[n1])
-                # reduce to a single slice
-                kfe_n1 = ue_n1.k[mx]
-                kfe_n1s.append(kfe_n1)
-                ue_n1.k = numpy.atleast_1d(scipy.sqrt(kfe_n1**2 - kz**2))
-                ue_n1.sl = numpy.atleast_1d(ue_n1.sl[mx] * (k0 / kfe_n1) ** 2)
-                ue_n1.al = numpy.atleast_1d(ue_n1.al[mx])
-                ue_n1.sr = numpy.atleast_1d(ue_n1.sr[mx] * (k0 / kfe_n1) ** 2)
-                ue_n1.ar = numpy.atleast_1d(ue_n1.ar[mx])
-                ue_n1.U = numpy.atleast_1d(ue_n1.U[mx : mx + 2])
-                ue_n1s.append(ue_n1)
-                uedot_n1s.append(dot(ue_n1))
-
-                phi_n2 = mode.slicesx[mx].modih[n1]
-                phi_n2s.append(phi_n2)
-                phidot_n2s.append(dot(phi_n2))
-
-                psi_n2 = mode.slicesx[mx].modie[n1]
-                psi_n2s.append(psi_n2)
-                psisueps_n2s.append(sueps(psi_n2))
-                psidotsueps_n2s.append(sueps(dot(psi_n2)))
-
-                uh_n2 = copy.deepcopy(mode.modih[n1])
-                # reduce to a single slice
-                kfh_n2 = uh_n2.k[mx]
+                phi_n2s_c.append(_conj_mode1d(phi_n2))
+                phidot_n2s_c.append(_conj_mode1d(phidot_n2))
+                psi_n2s_c.append(_conj_mode1d(psi_n2))
+                uh_n2s_c.append(_conj_mode1d(uh_n2))
+                uhdot_n2s_c.append(_conj_mode1d(uhdot_n2))
+                ue_n2s_c.append(_conj_mode1d(ue_n2))
                 kfh_n2s.append(kfh_n2)
-                uh_n2.k = numpy.atleast_1d(scipy.sqrt(kfh_n2**2 - kz**2))
-                uh_n2.sl = numpy.atleast_1d(uh_n2.sl[mx] * (k0 / kfh_n2) ** 2)
-                uh_n2.al = numpy.atleast_1d(uh_n2.al[mx])
-                uh_n2.sr = numpy.atleast_1d(uh_n2.sr[mx] * (k0 / kfh_n2) ** 2)
-                uh_n2.ar = numpy.atleast_1d(uh_n2.ar[mx])
-                uh_n2.U = numpy.atleast_1d(uh_n2.U[mx : mx + 2])
-                uh_n2s.append(uh_n2)
-                uhdot_n2s.append(dot(uh_n2))
 
-                ue_n2 = copy.deepcopy(mode.modie[n1])
-                # reduce to a single slice
-                kfe_n2 = ue_n2.k[mx]
-                kfe_n2s.append(kfe_n2)
-                ue_n2.k = numpy.atleast_1d(scipy.sqrt(kfe_n2**2 - kz**2))
-                ue_n2.sl = numpy.atleast_1d(ue_n2.sl[mx] * (k0 / kfe_n2) ** 2)
-                ue_n2.al = numpy.atleast_1d(ue_n2.al[mx])
-                ue_n2.sr = numpy.atleast_1d(ue_n2.sr[mx] * (k0 / kfe_n2) ** 2)
-                ue_n2.ar = numpy.atleast_1d(ue_n2.ar[mx])
-                ue_n2.U = numpy.atleast_1d(ue_n2.U[mx : mx + 2])
-                ue_n2s.append(ue_n2)
-                uedot_n2s.append(dot(ue_n2))
-
-            for n1 in range(nmodi):
+            kz2_c = numpy.conj(kz2)
+            for n1 in range(nmodi1):
                 uh_n1 = uh_n1s[n1]
                 ue_n1 = ue_n1s[n1]
                 uedot_n1 = uedot_n1s[n1]
                 phi_n1 = phi_n1s[n1]
-                psi_n1 = psi_n1s[n1]
                 psidotsueps_n1 = psidotsueps_n1s[n1]
                 psisueps_n1 = psisueps_n1s[n1]
-                kfe_n1 = kfe_n1s[n1]
+                kfe_n1_sq = kfe_n1s[n1] ** 2
 
-                for n2 in range(nmodi):
-                    uh_n2 = uh_n2s[n2]
-                    uhdot_n2 = uhdot_n2s[n2]
-                    ue_n2 = ue_n2s[n2]
-                    phi_n2 = phi_n2s[n2]
-                    phidot_n2 = phidot_n2s[n2]
-                    psi_n2 = psi_n2s[n2]
-                    kfh_n2 = kfh_n2s[n2]
+                for n2 in range(nmodi2):
+                    uh_n2_c = uh_n2s_c[n2]
+                    uhdot_n2_c = uhdot_n2s_c[n2]
+                    ue_n2_c = ue_n2s_c[n2]
+                    phi_n2_c = phi_n2s_c[n2]
+                    phidot_n2_c = phidot_n2s_c[n2]
+                    psi_n2_c = psi_n2s_c[n2]
+                    kfh_n2_sq_c = numpy.conj(kfh_n2s[n2] ** 2)
 
-                    Sx += kz * kfh_n2**2 / k0**3 * scalarprod(
-                        uh_n1, uh_n2
-                    ) * scalarprod(phi_n1, phi_n2) - kfh_n2**2 / k0**4 * scalarprod(
-                        uedot_n1, uh_n2
-                    ) * scalarprod(
-                        psidotsueps_n1, phi_n2
+                    Sx += 0.5 * (
+                        kz1
+                        * kfh_n2_sq_c
+                        / (k0_1 * k0_2**2)
+                        * scalarprod(uh_n1, uh_n2_c)
+                        * scalarprod(phi_n1, phi_n2_c)
+                        - kfh_n2_sq_c
+                        / (k0_1**2 * k0_2**2)
+                        * scalarprod(uedot_n1, uh_n2_c)
+                        * scalarprod(psidotsueps_n1, phi_n2_c)
                     )
-                    Sy += kfe_n1**2 * kz / k0**3 * scalarprod(
-                        ue_n1, ue_n2
-                    ) * scalarprod(
-                        psisueps_n1, psi_n2
-                    ) + kfe_n1**2 / k0**4 * scalarprod(
-                        ue_n1, uhdot_n2
-                    ) * scalarprod(
-                        psisueps_n1, phidot_n2
+                    Sy += 0.5 * (
+                        kfe_n1_sq
+                        * kz2_c
+                        / (k0_1**2 * k0_2)
+                        * scalarprod(ue_n1, ue_n2_c)
+                        * scalarprod(psisueps_n1, psi_n2_c)
+                        + kfe_n1_sq
+                        / (k0_1**2 * k0_2**2)
+                        * scalarprod(ue_n1, uhdot_n2_c)
+                        * scalarprod(psisueps_n1, phidot_n2_c)
                     )
 
         return (Sx, Sy)
 
-    def overlap(self, mode):
-        Sx, Sy = self.__overlap(mode)
-        return Sx - Sy
+    def overlap(self, mode, x=None, y=None):
+        if isinstance(mode, FMMMode2d) and x is None and y is None:
+            Sx, Sy = self.__overlap(mode)
+            return Sx + Sy
+
+        if x is None:
+            x = self.get_x()
+        else:
+            x = numpy.atleast_1d(x)
+        if y is None:
+            y = self.get_y()
+        else:
+            y = numpy.atleast_1d(y)
+
+        Ex1, Ey1, _, _, _, _ = self.fields(x, y)
+        if isinstance(mode, FMMMode2d):
+            _, _, _, cBx2, cBy2, _ = mode.fields(x, y)
+        else:
+            cBx2 = mode.get_field("Hx", x, y).T
+            cBy2 = mode.get_field("Hy", x, y).T
+        return 0.5 * EMpy.utils.trapz2(
+            Ex1 * numpy.conj(cBy2) - Ey1 * numpy.conj(cBx2), y, x
+        )
 
     def norm(self):
-        return scipy.sqrt(self.overlap(self))
+        return numpy.sqrt(numpy.abs(numpy.real(self.overlap(self))))
 
     def normalize(self):
         n = self.norm()
@@ -803,32 +757,32 @@ class FMMMode2d(Mode):
         # Ex: ignores y = 0, max
         x_Ex_FDTD = EMpy.utils.centered1d(x)
         y_Ex_FDTD = y[1:-1]
-        Ex_FDTD = EMpy.utils.interp2(x_Ex_FDTD, y_Ex_FDTD, x0, y0, Ex)
+        Ex_FDTD = EMpy.utils.interp2(x_Ex_FDTD, y_Ex_FDTD, x0, y0, Ex.T)
         # Ey: ignores x = 0, max
         x_Ey_FDTD = x[1:-1]
         y_Ey_FDTD = EMpy.utils.centered1d(y)
-        Ey_FDTD = EMpy.utils.interp2(x_Ey_FDTD, y_Ey_FDTD, x0, y0, Ey)
+        Ey_FDTD = EMpy.utils.interp2(x_Ey_FDTD, y_Ey_FDTD, x0, y0, Ey.T)
         # Ez: ignores x, y = 0, max
         x_Ez_FDTD = x[1:-1]
         y_Ez_FDTD = y[1:-1]
-        Ez_FDTD = EMpy.utils.interp2(x_Ez_FDTD, y_Ez_FDTD, x0, y0, Ez)
-        # Hx: ignores x = 0, max, /120pi, reverse direction
+        Ez_FDTD = EMpy.utils.interp2(x_Ez_FDTD, y_Ez_FDTD, x0, y0, Ez.T)
+        # Hx: ignores x = 0, max, /eta0, reverse direction
         x_Hx_FDTD = x[1:-1]
         y_Hx_FDTD = EMpy.utils.centered1d(y)
-        Hx_FDTD = EMpy.utils.interp2(x_Hx_FDTD, y_Hx_FDTD, x0, y0, cBx) / (
-            -120.0 * numpy.pi
+        Hx_FDTD = EMpy.utils.interp2(x_Hx_FDTD, y_Hx_FDTD, x0, y0, cBx.T) / (
+            -EMpy.constants.eta0
         )  # OKKIO!
-        # Hy: ignores y = 0, max, /120pi, reverse direction
+        # Hy: ignores y = 0, max, /eta0, reverse direction
         x_Hy_FDTD = EMpy.utils.centered1d(x)
         y_Hy_FDTD = y[1:-1]
-        Hy_FDTD = EMpy.utils.interp2(x_Hy_FDTD, y_Hy_FDTD, x0, y0, cBy) / (
-            -120.0 * numpy.pi
+        Hy_FDTD = EMpy.utils.interp2(x_Hy_FDTD, y_Hy_FDTD, x0, y0, cBy.T) / (
+            -EMpy.constants.eta0
         )
-        # Hz: /120pi, reverse direction
+        # Hz: /eta0, reverse direction
         x_Hz_FDTD = EMpy.utils.centered1d(x)
         y_Hz_FDTD = EMpy.utils.centered1d(y)
-        Hz_FDTD = EMpy.utils.interp2(x_Hz_FDTD, y_Hz_FDTD, x0, y0, cBz) / (
-            -120.0 * numpy.pi
+        Hz_FDTD = EMpy.utils.interp2(x_Hz_FDTD, y_Hz_FDTD, x0, y0, cBz.T) / (
+            -EMpy.constants.eta0
         )
 
         return (Ex_FDTD, Ey_FDTD, Ez_FDTD, Hx_FDTD, Hy_FDTD, Hz_FDTD)
@@ -856,16 +810,14 @@ class FMMMode2d(Mode):
             plt.ylabel("y")
             plt.title(titles[i])
             plt.axis("image")
-        plt.show()
 
         # power
         plt.figure()
-        plt.contour(x, y, numpy.abs(f[-1]))
+        plt.contour(x, y, numpy.abs(self.intensity(x, y)))
         plt.xlabel("x")
         plt.ylabel("y")
         plt.title("cSz")
         plt.axis("image")
-        plt.show()
 
     def __str__(self):
         return "neff = %s" % (self.keff / (2 * numpy.pi / self.slicesx[0].wl))
@@ -999,37 +951,37 @@ def analyticalsolution(nmodi, TETM, FMMpars):
     if by == "AA":
         kn = numpy.pi * numpy.arange(1, nmodi + 1) / D
         kn = kn[:, numpy.newaxis]
-        sl = numpy.sin(kn * (Uy[:-1] - Uy[0]))
-        sr = numpy.sin(kn * (Uy[1:] - Uy[0]))
-        al = numpy.cos(kn * (Uy[:-1] - Uy[0]))
-        ar = numpy.cos(kn * (Uy[1:] - Uy[0]))
+        sl[:] = numpy.sin(kn * (Uy[:-1] - Uy[0]))
+        sr[:] = numpy.sin(kn * (Uy[1:] - Uy[0]))
+        al[:] = numpy.cos(kn * (Uy[:-1] - Uy[0]))
+        ar[:] = numpy.cos(kn * (Uy[1:] - Uy[0]))
         sr[:, -1] = 0.0
         sl[:, 0] = 0.0
     elif by == "AS":
         kn = numpy.pi * (numpy.arange(0, nmodi) + 0.5) / D
         kn = kn[:, numpy.newaxis]
-        sl = numpy.sin(kn * (Uy[:-1] - Uy[0]))
-        sr = numpy.sin(kn * (Uy[1:] - Uy[0]))
-        al = numpy.cos(kn * (Uy[:-1] - Uy[0]))
-        ar = numpy.cos(kn * (Uy[1:] - Uy[0]))
+        sl[:] = numpy.sin(kn * (Uy[:-1] - Uy[0]))
+        sr[:] = numpy.sin(kn * (Uy[1:] - Uy[0]))
+        al[:] = numpy.cos(kn * (Uy[:-1] - Uy[0]))
+        ar[:] = numpy.cos(kn * (Uy[1:] - Uy[0]))
         ar[:, -1] = 0.0
         sl[:, 0] = 0.0
     elif by == "SA":
         kn = numpy.pi * (numpy.arange(0, nmodi) + 0.5) / D
         kn = kn[:, numpy.newaxis]
-        sl = numpy.cos(kn * (Uy[:-1] - Uy[0]))
-        sr = numpy.cos(kn * (Uy[1:] - Uy[0]))
-        al = -numpy.sin(kn * (Uy[:-1] - Uy[0]))
-        ar = -numpy.sin(kn * (Uy[1:] - Uy[0]))
+        sl[:] = numpy.cos(kn * (Uy[:-1] - Uy[0]))
+        sr[:] = numpy.cos(kn * (Uy[1:] - Uy[0]))
+        al[:] = -numpy.sin(kn * (Uy[:-1] - Uy[0]))
+        ar[:] = -numpy.sin(kn * (Uy[1:] - Uy[0]))
         sr[:, -1] = 0.0
         al[:, 0] = 0.0
     elif by == "SS":
         kn = numpy.pi * numpy.arange(0, nmodi) / D
         kn = kn[:, numpy.newaxis]
-        sl = numpy.cos(kn * (Uy[:-1] - Uy[0]))
-        sr = numpy.cos(kn * (Uy[1:] - Uy[0]))
-        al = -numpy.sin(kn * (Uy[:-1] - Uy[0]))
-        ar = -numpy.sin(kn * (Uy[1:] - Uy[0]))
+        sl[:] = numpy.cos(kn * (Uy[:-1] - Uy[0]))
+        sr[:] = numpy.cos(kn * (Uy[1:] - Uy[0]))
+        al[:] = -numpy.sin(kn * (Uy[:-1] - Uy[0]))
+        ar[:] = -numpy.sin(kn * (Uy[1:] - Uy[0]))
         ar[:, -1] = 0.0
         al[:, 0] = 0.0
 
@@ -1059,7 +1011,14 @@ def analyticalsolution(nmodi, TETM, FMMpars):
         modo.ar = ar[mk, :].astype(complex)
         modo.k = kn[mk] * numpy.ones(Nregions)
         modo.U = Uy
-        modo.keff = scipy.sqrt(betay[0] ** 2 - kn[mk] ** 2)
+        # Select passive branch Re(keff) - Im(keff) >= 0 (exp(+iwt - i*keff*z))
+        # so lossless cutoff modes lie on the negative imaginary axis (-i|keff|)
+        # continuously with the lossy kappa -> 0+ limit.
+        keff = numpy.emath.sqrt(betay[0] ** 2 - kn[mk] ** 2)
+        flip_keff = (keff.real - keff.imag < 0) | (
+            (keff.real - keff.imag == 0) & (keff.real < 0)
+        )
+        modo.keff = numpy.where(flip_keff, -keff, keff)
         modo.zero = 0.0
         modo.pars = FMMpars
         modi.append(modo)
@@ -1080,14 +1039,14 @@ def FMMshootingTM(kz_, FMMpars):
 
     Nregions = len(betay)
     d = numpy.diff(Uy)
-    Delta = numpy.zeros_like(kz)
+    Delta = numpy.zeros(kz.shape, dtype=complex)
 
     sl = numpy.zeros(Nregions, dtype=complex)
     sr = numpy.zeros_like(sl)
     al = numpy.zeros_like(sl)
     ar = numpy.zeros_like(sl)
 
-    k_ = scipy.sqrt(betay**2 - kz[:, numpy.newaxis] ** 2)
+    k_ = numpy.emath.sqrt(betay**2 - kz[:, numpy.newaxis] ** 2)
     kd = k_[:, numpy.newaxis] * d
     sinkdsuk_ = sinxsux(kd) * d
     coskd_ = numpy.cos(kd)
@@ -1139,7 +1098,9 @@ def FMMshootingTM(kz_, FMMpars):
             al[idx1] = ar[idx1] * coskd[idx1] + sr[idx1] * sinkdk[idx1]
 
             # ******************* requirement of continuity
-            if idx1 > n2:
+            # n2 is 1-based, so the last right-to-left layer is idx1 == n2 - 1;
+            # propagate across every interface strictly to the right of it.
+            if idx1 > n2 - 1:
                 sr[idx1 - 1] = sl[idx1]
                 ar[idx1 - 1] = al[idx1] / eps[idx1] * eps[idx1 - 1]
             # *******************
@@ -1153,8 +1114,14 @@ def FMMshootingTM(kz_, FMMpars):
             # normalize and save only if len(kz) == 1
             # otherwise, modo is ignored and only Delta is useful
 
-            # normalizza la propagazione sinistra e quella destra
-            alfa = sr[n1 - 1] / sl[n2 - 1]
+            # Match left and right shooting branches at interface Uy[n1].
+            # Use field ratio sr/sl unless the mode has a node (or near-node)
+            # at the interface, in which case match the continuous flux a/eps.
+            k_scale = max(float(numpy.max(numpy.abs(betay))), 1.0)
+            if abs(sl[n2 - 1]) * k_scale >= abs(al[n2 - 1]):
+                alfa = sr[n1 - 1] / sl[n2 - 1]
+            else:
+                alfa = (ar[n1 - 1] / eps[n1 - 1]) / (al[n2 - 1] / eps[n2 - 1])
             sl[n2 - 1 :] *= alfa
             sr[n2 - 1 :] *= alfa
             al[n2 - 1 :] *= alfa
@@ -1182,14 +1149,14 @@ def FMMshooting(kz_, FMMpars):
 
     Nregions = len(betay)
     d = numpy.diff(Uy)
-    Delta = numpy.zeros_like(kz)
+    Delta = numpy.zeros(kz.shape, dtype=complex)
 
     sl = numpy.zeros(Nregions, dtype=complex)
     sr = numpy.zeros_like(sl)
     al = numpy.zeros_like(sl)
     ar = numpy.zeros_like(sl)
 
-    k_ = scipy.sqrt(betay**2 - kz[:, numpy.newaxis] ** 2)
+    k_ = numpy.emath.sqrt(betay**2 - kz[:, numpy.newaxis] ** 2)
     kd = k_[:, numpy.newaxis] * d
     sinkdsuk_ = sinxsux(kd) * d
     coskd_ = numpy.cos(kd)
@@ -1241,7 +1208,9 @@ def FMMshooting(kz_, FMMpars):
             al[idx1] = ar[idx1] * coskd[idx1] + sr[idx1] * sinkdk[idx1]
 
             # ******************* requirement of continuity
-            if idx1 > n2:
+            # n2 is 1-based, so the last right-to-left layer is idx1 == n2 - 1;
+            # propagate across every interface strictly to the right of it.
+            if idx1 > n2 - 1:
                 sr[idx1 - 1] = sl[idx1]
                 ar[idx1 - 1] = al[idx1]
             # *******************
@@ -1293,8 +1262,14 @@ def FMMshooting(kz_, FMMpars):
         # normalize and save only if len(kz) == 1
         # otherwise, modo is ignored and only Delta is useful
 
-        # normalizza la propagazione sinistra e quella destra
-        alfa = sr[n1 - 1] / sl[n2 - 1]
+        # Match left and right shooting branches at interface Uy[n1].
+        # Use field ratio sr/sl unless the mode has a node (or near-node)
+        # at the interface, in which case match the continuous derivative a.
+        k_scale = max(float(numpy.max(numpy.abs(betay))), 1.0)
+        if abs(sl[n2 - 1]) * k_scale >= abs(al[n2 - 1]):
+            alfa = sr[n1 - 1] / sl[n2 - 1]
+        else:
+            alfa = ar[n1 - 1] / al[n2 - 1]
 
         sl[n2 - 1 :] *= alfa
         sr[n2 - 1 :] *= alfa
@@ -1348,8 +1323,17 @@ def findzerosnew(x, y, searchinterval):
     if searchinterval < minsi:
         searchinterval = minsi
 
-    dy = numpy.r_[0, numpy.diff(numpy.diff(scipy.log(y))), 0]
-    idy = numpy.where(dy > 0.005)[0]
+    # Detect sharp lossless dips (dy > 0.005) as well as broad local minima
+    # produced by off-axis complex roots in lossy waveguides, where discrete
+    # log-curvature scales as (dx / Im(kz))^2 and can fall below 0.005.
+    y_safe = numpy.maximum(numpy.real(y), 1e-300)
+    dy = numpy.r_[0.0, numpy.diff(numpy.diff(numpy.log(y_safe))), 0.0]
+    is_local_min = numpy.r_[
+        False,
+        (y_safe[1:-1] < y_safe[:-2]) & (y_safe[1:-1] <= y_safe[2:]),
+        False,
+    ]
+    idy = numpy.where((dy > 0.005) | (is_local_min & (dy > 1e-12)))[0]
 
     if len(idy) == 0:
         zeri = numpy.array([])
@@ -1363,8 +1347,8 @@ def findzerosnew(x, y, searchinterval):
 
         dz = numpy.abs(numpy.diff(zeri))
         if len(dz) == 0:
-            z1[0] = zeri - searchinterval / 2
-            z2[0] = zeri + searchinterval / 2
+            z1[0] = zeri[0] - searchinterval / 2
+            z2[0] = zeri[0] + searchinterval / 2
         else:
             delta = numpy.min([dz[0], searchinterval])
             z1[0] = zeri[0] - delta / 2
@@ -1426,7 +1410,123 @@ def fzzeroabs2(f, zmin, zmax):
     return (z0, valf)
 
 
+def _conj_mode1d(modo):
+    """Return an FMMMode1d evaluating to conj(modo(u)) for real u."""
+    mc = copy.deepcopy(modo)
+    mc.k = numpy.conj(modo.k)
+    mc.sl = numpy.conj(modo.sl)
+    mc.sr = numpy.conj(modo.sr)
+    mc.al = numpy.conj(modo.al)
+    mc.ar = numpy.conj(modo.ar)
+    return mc
+
+
+def _eval_segment(k, sl, sr, al, d, s):
+    """Evaluate Helmholtz segment u'' + k^2 u = 0 and u' at offset s in [0, d].
+
+    Uses left-endpoint (sl, al) when |Im(k * d)| <= 1 (exact at k = 0 and sin(k*d) = 0),
+    and symmetric two-endpoint (sl, sr) decaying exponentials when |Im(k * d)| > 1 so
+    all exponentials stay bounded by 1 with no O(exp(|Im(k * d)|)) cancellation.
+    """
+    if d == 0.0:
+        return sl + 0.0 * s, al + 0.0 * s
+    if abs(numpy.imag(k * d)) > 1.0:
+        # Choose k_d with Im(k_d) < 0 so |exp(-1j * k_d * s)| <= 1 for s >= 0
+        k_d = k if numpy.imag(k) < 0 else -k
+        p = numpy.exp(-1j * k_d * d)
+        denom = 1.0 - p**2
+        eL = numpy.exp(-1j * k_d * s)
+        eR = numpy.exp(-1j * k_d * (d - s))
+        u = (sl * (eL - p * eR) + sr * (eR - p * eL)) / denom
+        du = -1j * k_d * (sl * (eL + p * eR) - sr * (eR + p * eL)) / denom
+        return u, du
+    u = sl * numpy.cos(k * s) + al * s * sinxsux(k * s)
+    du = -k * sl * numpy.sin(k * s) + al * numpy.cos(k * s)
+    return u, du
+
+
+def _slice_mode1dx(modo_x, mx, k0, kz):
+    """Extract single-slice x-mode on [U[mx], U[mx + 1]] for longitudinal wavevector kz.
+
+    Computes right-endpoint (sr, ar) from (k, sl, al) when |Im(k * dx)| <= 1, and
+    preserves bounded endpoints (sl, sr) from creacoeffx3 when |Im(k * dx)| > 1 so the
+    Sturm-Liouville Wronskian in scalarprod stays free of evanescent cancellation.
+    """
+    m = FMMMode1dx()
+    kf = modo_x.k[mx]
+    k = numpy.emath.sqrt(kf**2 - kz**2)
+    sl = modo_x.sl[mx] * (k0 / kf) ** 2
+    sr_stored = modo_x.sr[mx] * (k0 / kf) ** 2
+    al_stored = modo_x.al[mx]
+    U_slice = numpy.asarray(modo_x.U[mx : mx + 2], dtype=float)
+    dx = U_slice[1] - U_slice[0]
+    if abs(numpy.imag(k * dx)) > 1.0:
+        sr = sr_stored
+        _, al = _eval_segment(k, sl, sr, al_stored, dx, 0.0)
+        _, ar = _eval_segment(k, sl, sr, al_stored, dx, dx)
+    else:
+        al = al_stored
+        sr, ar = _eval_segment(k, sl, sr_stored, al, dx, dx)
+    m.k = numpy.atleast_1d(k)
+    m.sl = numpy.atleast_1d(sl)
+    m.al = numpy.atleast_1d(al)
+    m.sr = numpy.atleast_1d(sr)
+    m.ar = numpy.atleast_1d(ar)
+    m.U = U_slice
+    return m, kf
+
+
+def _refine_mode1d(modo, U_new):
+    """Restrict/refine a piecewise-sinusoidal FMMMode1d onto knot vector U_new."""
+    U_old = numpy.asarray(modo.U, dtype=float)
+    U_new = numpy.asarray(U_new, dtype=float)
+    if numpy.array_equal(U_old, U_new):
+        return copy.deepcopy(modo)
+
+    n_seg = len(U_new) - 1
+    dtype = numpy.result_type(modo.k, modo.sl, modo.sr, modo.al, modo.ar)
+    m = copy.copy(modo)
+    m.U = U_new.copy()
+    m.k = numpy.empty(n_seg, dtype=dtype)
+    m.sl = numpy.empty(n_seg, dtype=dtype)
+    m.sr = numpy.empty(n_seg, dtype=dtype)
+    m.al = numpy.empty(n_seg, dtype=dtype)
+    m.ar = numpy.empty(n_seg, dtype=dtype)
+
+    for i in range(n_seg):
+        ua = U_new[i]
+        ub = U_new[i + 1]
+        u_mid = 0.5 * (ua + ub)
+        idx = int(
+            numpy.clip(
+                numpy.searchsorted(U_old, u_mid, side="right") - 1,
+                0,
+                len(modo.sl) - 1,
+            )
+        )
+        k = modo.k[idx]
+        sl = modo.sl[idx]
+        sr = modo.sr[idx]
+        al = modo.al[idx]
+        d_seg = U_old[idx + 1] - U_old[idx]
+        da = ua - U_old[idx]
+        db = ub - U_old[idx]
+
+        m.k[i] = k
+        m.sl[i], m.al[i] = _eval_segment(k, sl, sr, al, d_seg, da)
+        m.sr[i], m.ar[i] = _eval_segment(k, sl, sr, al, d_seg, db)
+
+    return m
+
+
 def scalarprod(modo1, modo2):
+    """Exact unconjugated 1D integral int modo1(u) * modo2(u) du across layers.
+
+    Kept unconjugated for Sudbo's bi-orthogonal 1D slice formulation on lossy media;
+    pass _conj_mode1d(modo2) when a Hermitian L2 inner product is needed. Uses the
+    Sturm-Liouville Wronskian when k1^2 != k2^2 and a smooth sinxsux midpoint form
+    near k1 = +-k2 (including k = 0) to avoid removable singularities.
+    """
     d = numpy.diff(modo1.U)
 
     ky1 = modo1.k
@@ -1442,30 +1542,62 @@ def scalarprod(modo1, modo2):
     sr2 = modo2.sr
 
     Nlayers = len(modo1.sl)
-    scprod = numpy.zeros_like(modo1.sl)
+    dtype = numpy.result_type(sl1, al1, sr1, ar1, sl2, al2, sr2, ar2, ky1, ky2)
+    scprod = numpy.zeros(Nlayers, dtype=dtype)
 
     for idy in range(Nlayers):
-        if numpy.allclose(ky1[idy], ky2[idy]):
-            if numpy.linalg.norm(ky1) < 1e-10:
-                scprod[idy] = sl1[idy] * sl2[idy] * (modo1.U[idy + 1] - modo1.U[idy])
-            else:
-                scprod[idy] = (sl1[idy] * al2[idy] - sr1[idy] * ar2[idy]) / ky1[
-                    idy
-                ] / ky2[idy] / 2.0 + d[idy] / 2.0 * (
-                    sl1[idy] * sl2[idy] + al1[idy] * al2[idy] / ky1[idy] / ky2[idy]
-                )
+        di = d[idy]
+        k1 = ky1[idy]
+        k2 = ky2[idy]
+        diff_k2 = k1**2 - k2**2
+        scale = 1.0 + abs(k1 * di) ** 2 + abs(k2 * di) ** 2
+        if abs(diff_k2) * (di**2) > 1e-10 * scale:
+            scprod[idy] = (
+                sr1[idy] * ar2[idy]
+                - ar1[idy] * sr2[idy]
+                - sl1[idy] * al2[idy]
+                + al1[idy] * sl2[idy]
+            ) / diff_k2
         else:
-            if numpy.linalg.norm(ky1) < 1e-10:
-                scprod[idy] = sl1[idy] * (al2[idy] - ar2[idy]) / ky2[idy] ** 2
-            elif numpy.linalg.norm(ky2) < 1e-10:
-                scprod[idy] = sl2[idy] * (al1[idy] - ar1[idy]) / ky1[idy] ** 2
+            k = numpy.emath.sqrt(0.5 * (k1**2 + k2**2))
+            kd = k * di
+            if abs(numpy.imag(kd)) > 1.0:
+                if numpy.imag(kd) > 0:
+                    k = -k
+                    kd = -kd
+                p = numpy.exp(-1j * kd)
+                p2 = p * p
+                one_m_p2_sq = (1.0 - p2) ** 2
+                i_diag = -(1j * (1.0 - p2 * p2) + 4.0 * kd * p2) / (
+                    2.0 * k * one_m_p2_sq
+                )
+                i_cross = p * (kd * (1.0 + p2) + 1j * (1.0 - p2)) / (k * one_m_p2_sq)
+                res = (sl1[idy] * sl2[idy] + sr1[idy] * sr2[idy]) * i_diag + (
+                    sl1[idy] * sr2[idy] + sr1[idy] * sl2[idy]
+                ) * i_cross
             else:
-                scprod[idy] = (
-                    sr1[idy] * ar2[idy]
-                    - ar1[idy] * sr2[idy]
-                    - sl1[idy] * al2[idy]
-                    + al1[idy] * sl2[idy]
-                ) / (ky1[idy] ** 2 - ky2[idy] ** 2)
+                s2kd = sinxsux(2.0 * kd)
+                skd = sinxsux(kd)
+                icc = 0.5 * di * (1.0 + s2kd)
+                isc = 0.5 * (di**2) * (skd**2)
+                if abs(kd) < 1e-2:
+                    kd2 = kd**2
+                    iss = (di**3) * (
+                        1.0 / 3.0
+                        - kd2 / 15.0
+                        + 2.0 * (kd2**2) / 315.0
+                        - (kd2**3) / 2835.0
+                    )
+                else:
+                    iss = 0.5 * di * (1.0 - s2kd) / (k**2)
+                res = (
+                    sl1[idy] * sl2[idy] * icc
+                    + (sl1[idy] * al2[idy] + al1[idy] * sl2[idy]) * isc
+                    + al1[idy] * al2[idy] * iss
+                )
+            scprod[idy] = (
+                numpy.real(res) if numpy.issubdtype(dtype, numpy.floating) else res
+            )
 
     return numpy.sum(scprod)
 
@@ -1485,7 +1617,11 @@ def FMM1d_y(Uy, ny, wl, nmodi, boundaryRL, TETM, verbosity=0):
     k0 = 2 * numpy.pi / wl
     betay = ny * k0
     Nstepskz = 1543
-    searchinterval = max(50.0 / Nstepskz, numpy.abs(numpy.min(numpy.imag(2.0 * betay))))
+    max_re_betay = float(numpy.max(numpy.real(betay)))
+    searchinterval = max(
+        max((25.0 / numpy.pi) * k0, 2.0 * max_re_betay) / Nstepskz,
+        float(numpy.abs(numpy.min(numpy.imag(2.0 * betay)))),
+    )
     imsearchinterval = 10 * k0
     # ypointsperregion = 5000
 
@@ -1500,7 +1636,7 @@ def FMM1d_y(Uy, ny, wl, nmodi, boundaryRL, TETM, verbosity=0):
     rekz2 = numpy.linspace(
         (numpy.max(numpy.real(betay)) + searchinterval) ** 2, 0.0, Nstepskz
     )
-    rekz = scipy.sqrt(rekz2)
+    rekz = numpy.emath.sqrt(rekz2)
     if TETM == "TM":
         Message("Shooting TM.", 3).show(verbosity)
         matchingre, modotmp = FMMshootingTM(rekz, FMMpars)
@@ -1514,7 +1650,7 @@ def FMM1d_y(Uy, ny, wl, nmodi, boundaryRL, TETM, verbosity=0):
     zerire2, z12, z22 = findzerosnew(
         nre2, numpy.abs(matchingre), (searchinterval / k0) ** 2
     )
-    zerire = scipy.sqrt(zerire2)
+    zerire = numpy.emath.sqrt(zerire2)
     kz1 = zerire * k0 - searchinterval / 2.0 + 1j * imsearchinterval
     kz2 = zerire * k0 + searchinterval / 2.0 - 1j * imsearchinterval
     Message("Found %d real zeros." % len(zerire), 2).show(verbosity)
@@ -1529,26 +1665,28 @@ def FMM1d_y(Uy, ny, wl, nmodi, boundaryRL, TETM, verbosity=0):
             imkzb = imkzb + numpy.max(numpy.real(betay))
             # imkz = numpy.linspace(imkza, imkzb, Nstepskz)
             imkz2 = numpy.linspace(imkza**2, imkzb**2, Nstepskz)
-            imkz = scipy.sqrt(imkz2)
+            imkz = numpy.emath.sqrt(imkz2)
             if TETM == "TM":
-                matchingim, modotmp = FMMshootingTM(1j * imkz, FMMpars)
+                matchingim, modotmp = FMMshootingTM(-1j * imkz, FMMpars)
             else:
-                matchingim, modotmp = FMMshooting(1j * imkz, FMMpars)
+                matchingim, modotmp = FMMshooting(-1j * imkz, FMMpars)
             # nim = imkz * wl / 2.0 / numpy.pi
             nim2 = imkz2 * (wl / 2.0 / numpy.pi) ** 2
             # zeriim, z1, z2 = findzerosnew(nim, numpy.abs(matchingim), searchinterval / k0)
             zeriim2, z12, z22 = findzerosnew(
                 nim2, numpy.abs(matchingim), (searchinterval / k0) ** 2
             )
-            zeriim = scipy.sqrt(zeriim2)
+            zeriim = numpy.emath.sqrt(zeriim2)
             Message("Found %d imag zeros." % len(zeriim), 2).show(verbosity)
+            # Scan the passive negative imaginary axis (-i * imkz) so lossy
+            # cutoff modes converge in Quadrant IV (Re >= 0, Im <= 0).
             kz1 = numpy.r_[
                 kz1,
-                1j * (zeriim * k0 - imsearchinterval / 2.0 + 1j * searchinterval / 2.0),
+                -1j * (zeriim * k0 - imsearchinterval / 2.0) - searchinterval / 2.0,
             ]
             kz2 = numpy.r_[
                 kz2,
-                1j * (zeriim * k0 + imsearchinterval / 2.0 - 1j * searchinterval / 2.0),
+                -1j * (zeriim * k0 + imsearchinterval / 2.0) + searchinterval / 2.0,
             ]
 
     mk = 0
@@ -1558,16 +1696,25 @@ def FMM1d_y(Uy, ny, wl, nmodi, boundaryRL, TETM, verbosity=0):
     for m in range(0, len(kz1)):
         if mk == nmodi:
             break
-        if TETM == "TM":
-            z0, valf = fzzeroabs2(
-                lambda kz: FMMshootingTM(kz, FMMpars)[0], kz1[m], kz2[m]
-            )
-            z0 = numpy.atleast_1d(z0)
-        else:
-            z0, valf = fzzeroabs2(
-                lambda kz: FMMshooting(kz, FMMpars)[0], kz1[m], kz2[m]
-            )
-            z0 = numpy.atleast_1d(z0)
+        shoot_fn = (
+            (lambda kz: FMMshootingTM(kz, FMMpars)[0])
+            if TETM == "TM"
+            else (lambda kz: FMMshooting(kz, FMMpars)[0])
+        )
+        scale_0 = max(
+            float(numpy.max(numpy.abs(shoot_fn(0.5 * (kz1[m] + kz2[m]))))), 1e-30
+        )
+        z0, valf = fzzeroabs2(lambda kz: shoot_fn(kz) / scale_0, kz1[m], kz2[m])
+        eps_box = 1e-7 * k0
+        scale_1 = max(float(numpy.max(numpy.abs(shoot_fn(z0 + eps_box)))), 1e-30)
+        z0, valf = fzzeroabs2(
+            lambda kz: shoot_fn(kz) / scale_1,
+            z0 - eps_box + 1j * eps_box,
+            z0 + eps_box - 1j * eps_box,
+        )
+        z0 = numpy.atleast_1d(z0)
+        flip_z0 = (z0.real - z0.imag < 0) | ((z0.real - z0.imag == 0) & (z0.real < 0))
+        z0 = numpy.where(flip_z0, -z0, z0)
 
         if len(z0) > 0:
             if TETM == "TM":
@@ -1740,25 +1887,26 @@ def ortonormalita(slices):
 
     ns1 = numpy.linalg.norm(numpy.r_[neesueps, nhh, nRhe])
     ns2 = numpy.linalg.norm(numpy.r_[nRee, nRhh, nAC])
-    errore = numpy.linalg.norm(numpy.r_[ns1, ns2]) / scipy.sqrt(8 * nmodi)
+    errore = numpy.linalg.norm(numpy.r_[ns1, ns2]) / numpy.emath.sqrt(8 * nmodi)
     return errore
 
 
 def method_of_component(kz_, slices, Rot, uscelto=None, icomp=None):
     kz = numpy.atleast_1d(kz_)
+    k0 = 2.0 * numpy.pi / slices[0].wl
     abscomp = numpy.zeros(len(kz))
     #    tmp = 500 # OKKIO: perche' 500?
     tmp = (
         100 * len(slices[0].modie) * (len(slices) - 1)
     )  # OKKIO: dimension of Mvec * 50. enough?
-    normu = numpy.zeros(tmp, dtype=complex)
+    rng = numpy.random.default_rng(0)
     for m in range(len(kz)):
-        M = Mvec(kz[m], slices, Rot)
-        urn = numpy.zeros((M.shape[0], tmp), dtype=complex)
+        M = Mvec(kz[m], slices, Rot) / k0
         if (uscelto is None) and (icomp is None):
+            urn = numpy.zeros((M.shape[0], tmp), dtype=complex)
+            normu = numpy.zeros(tmp, dtype=complex)
             for k in range(tmp):
-                numpy.random.seed()
-                ur = numpy.random.rand(M.shape[0])
+                ur = rng.random(M.shape[0])
                 urn[:, k] = ur / numpy.linalg.norm(ur)
                 normu[k] = numpy.linalg.norm(numpy.dot(M, urn[:, k]))
             iurn = numpy.argmin(normu)
@@ -1786,22 +1934,44 @@ def creaTeThSeSh(kz, slices):
     Thright = numpy.zeros_like(Th)
     Teright = numpy.zeros_like(Th)
 
+    def _kx_cot_csc(kx, width):
+        u = numpy.asarray(kx * width, dtype=complex)
+        small = numpy.abs(u) < 1e-6
+        large_im = numpy.abs(u.imag) > 100.0
+        u_safe = numpy.where(small | large_im, 1.0 + 0.0j, u)
+        cot_term = kx / numpy.tan(u_safe)
+        csc_term = kx / numpy.sin(u_safe)
+        s_im = numpy.where(u.imag >= 0, 1.0, -1.0)
+        cot_term = numpy.where(
+            small,
+            (1.0 - u**2 / 3.0) / width,
+            numpy.where(large_im, -1j * s_im * kx, cot_term),
+        )
+        csc_term = numpy.where(
+            small,
+            (1.0 + u**2 / 6.0) / width,
+            numpy.where(large_im, 0.0 + 0.0j, csc_term),
+        )
+        return cot_term, csc_term
+
     for idx in range(Nslices):
         ke = numpy.array([m.keff.item() for m in slices[idx].modie])
         kh = numpy.array([m.keff.item() for m in slices[idx].modih])
 
-        kxh = scipy.sqrt(kh**2 - kz**2)
-        kxe = scipy.sqrt(ke**2 - kz**2)
+        kxh = numpy.emath.sqrt(kh**2 - kz**2)
+        kxe = numpy.emath.sqrt(ke**2 - kz**2)
 
-        Th[:, idx] = (k0 / kh) ** 2 * kxh / numpy.tan(kxh * d[idx])
-        Sh[:, idx] = (k0 / kh) ** 2 * kxh / numpy.sin(kxh * d[idx])
-        Te[:, idx] = (k0 / ke) ** 2 * kxe / numpy.tan(kxe * d[idx])
-        Se[:, idx] = (k0 / ke) ** 2 * kxe / numpy.sin(kxe * d[idx])
+        cot_h, csc_h = _kx_cot_csc(kxh, d[idx])
+        cot_e, csc_e = _kx_cot_csc(kxe, d[idx])
+        Th[:, idx] = (k0 / kh) ** 2 * cot_h
+        Sh[:, idx] = (k0 / kh) ** 2 * csc_h
+        Te[:, idx] = (k0 / ke) ** 2 * cot_e
+        Se[:, idx] = (k0 / ke) ** 2 * csc_e
 
     ke = numpy.array([m.keff.item() for m in slices[0].modie])
     kh = numpy.array([m.keff.item() for m in slices[0].modih])
-    kxh = scipy.sqrt(kh**2 - kz**2)
-    kxe = scipy.sqrt(ke**2 - kz**2)
+    kxh = numpy.emath.sqrt(kh**2 - kz**2)
+    kxe = numpy.emath.sqrt(ke**2 - kz**2)
 
     if slices[0].boundary.xleft == "Electric Wall":
         # ah = 0
@@ -1814,10 +1984,10 @@ def creaTeThSeSh(kz, slices):
 
     ke = numpy.array([m.keff.item() for m in slices[-1].modie])
     kh = numpy.array([m.keff.item() for m in slices[-1].modih])
-    kxh = scipy.sqrt(kh**2 - kz**2)
-    kxe = scipy.sqrt(ke**2 - kz**2)
+    kxh = numpy.emath.sqrt(kh**2 - kz**2)
+    kxe = numpy.emath.sqrt(ke**2 - kz**2)
 
-    if slices[-1].boundary.xleft == "Electric Wall":
+    if slices[-1].boundary.xright == "Electric Wall":
         # ah = 0
         Thright = -((k0 / kh) ** 2) * kxh * numpy.tan(kxh * d[-1])
         Teright = Te[:, -1]
@@ -1890,21 +2060,25 @@ def Mvec(kz, slices, R):
         IDh = Dim1 + idxhID
         JDh = Dim1 + idxhJD
 
+        # Convert 1-based slice index idx to 0-based i (matching the idx=2 and
+        # idx=Nslices blocks below) before indexing Ree/Rhh/Te/Th/Se/Sh.
+        i = idx - 1
+
         M[numpy.ix_(IAe, JAe)] = numpy.dot(
-            Ree[:, :, idx - 1].T * Te[:, idx - 1], Ree[:, :, idx - 1]
-        ) + numpy.diag(Te[:, idx])
-        M[numpy.ix_(IBe, JBe)] = -Ree[:, :, idx - 1].T * Se[:, idx - 1]
-        M[numpy.ix_(ICe, JCe)] = -Se[:, numpy.newaxis, idx] * Ree[:, :, idx]
+            Ree[:, :, i - 1].T * Te[:, i - 1], Ree[:, :, i - 1]
+        ) + numpy.diag(Te[:, i])
+        M[numpy.ix_(IBe, JBe)] = -Ree[:, :, i - 1].T * Se[:, i - 1]
+        M[numpy.ix_(ICe, JCe)] = -Se[:, numpy.newaxis, i] * Ree[:, :, i]
         M[numpy.ix_(IDe, JDe)] = -kz * numpy.dot(
-            Ree[:, :, idx - 1].T, Rhem[:, :, idx - 1].T
+            Ree[:, :, i - 1].T, Rhem[:, :, i - 1].T
         )
 
         M[numpy.ix_(IAh, JAh)] = numpy.dot(
-            Rhhm[:, :, idx - 1] * Th[:, idx - 1], Rhh[:, :, idx - 1]
-        ) + numpy.diag(Th[:, idx])
-        M[numpy.ix_(IBh, JBh)] = -Rhhm[:, :, idx - 1] * Sh[:, idx - 1]
-        M[numpy.ix_(ICh, JCh)] = -Sh[:, numpy.newaxis, idx] * Rhh[:, :, idx]
-        M[numpy.ix_(IDh, JDh)] = kz * numpy.dot(Rhhm[:, :, idx - 1], Rhe[:, :, idx - 1])
+            Rhhm[:, :, i - 1] * Th[:, i - 1], Rhh[:, :, i - 1]
+        ) + numpy.diag(Th[:, i])
+        M[numpy.ix_(IBh, JBh)] = -Rhhm[:, :, i - 1] * Sh[:, i - 1]
+        M[numpy.ix_(ICh, JCh)] = -Sh[:, numpy.newaxis, i] * Rhh[:, :, i]
+        M[numpy.ix_(IDh, JDh)] = kz * numpy.dot(Rhhm[:, :, i - 1], Rhe[:, :, i - 1])
 
     idx = 2
 
@@ -2017,69 +2191,44 @@ def check_matching(kz, slices, modo, R):
     Ael = numpy.array([m.al for m in modo.modie])
 
     kz = modo.keff
+    Nslices = len(slices)
+    residuals = []
+    for i in range(Nslices - 1):
+        residuals.append(
+            numpy.linalg.norm(numpy.dot(R.Rhh[:, :, i], Shl[:, i + 1]) - Shr[:, i])
+        )
+        residuals.append(
+            numpy.linalg.norm(numpy.dot(R.Ree[:, :, i], Sel[:, i + 1]) - Ser[:, i])
+        )
+        residuals.append(
+            numpy.linalg.norm(
+                numpy.dot(R.Rhh[:, :, i], Ahl[:, i + 1])
+                - kz * numpy.dot(R.Rhe[:, :, i], Sel[:, i + 1])
+                - Ahr[:, i]
+            )
+        )
+        residuals.append(
+            numpy.linalg.norm(
+                numpy.dot(R.Reem[:, :, i].T, Ael[:, i + 1])
+                + kz * numpy.dot(R.Rhem[:, :, i].T, Shl[:, i + 1])
+                - Aer[:, i]
+            )
+        )
+    for i in range(Nslices):
+        residuals.append(
+            numpy.linalg.norm(-Te[:, i] * Sel[:, i] + Se[:, i] * Ser[:, i] - Ael[:, i])
+        )
+        residuals.append(
+            numpy.linalg.norm(-Th[:, i] * Shl[:, i] + Sh[:, i] * Shr[:, i] - Ahl[:, i])
+        )
+        residuals.append(
+            numpy.linalg.norm(-Sh[:, i] * Shl[:, i] + Th[:, i] * Shr[:, i] - Ahr[:, i])
+        )
+        residuals.append(
+            numpy.linalg.norm(-Se[:, i] * Sel[:, i] + Te[:, i] * Ser[:, i] - Aer[:, i])
+        )
 
-    n1 = numpy.linalg.norm(numpy.dot(R.Rhh[:, :, 1], Shl[:, 2]) - Shr[:, 1])
-    n2 = numpy.linalg.norm(numpy.dot(R.Rhh[:, :, 0], Shl[:, 1]) - Shr[:, 0])
-    n3 = numpy.linalg.norm(numpy.dot(R.Ree[:, :, 1], Sel[:, 2]) - Ser[:, 1])
-    n4 = numpy.linalg.norm(numpy.dot(R.Ree[:, :, 0], Sel[:, 1]) - Ser[:, 0])
-    n5 = numpy.linalg.norm(
-        numpy.dot(R.Rhh[:, :, 1], Ahl[:, 2])
-        - kz * numpy.dot(R.Rhe[:, :, 1], Sel[:, 2])
-        - Ahr[:, 1]
-    )
-    n6 = numpy.linalg.norm(
-        numpy.dot(R.Rhh[:, :, 0], Ahl[:, 1])
-        - kz * numpy.dot(R.Rhe[:, :, 0], Sel[:, 1])
-        - Ahr[:, 0]
-    )
-    n7 = numpy.linalg.norm(
-        numpy.dot(R.Reem[:, :, 1].T, Ael[:, 2])
-        + kz * numpy.dot(R.Rhem[:, :, 1].T, Shl[:, 2])
-        - Aer[:, 1]
-    )
-    n8 = numpy.linalg.norm(
-        numpy.dot(R.Reem[:, :, 0].T, Ael[:, 1])
-        + kz * numpy.dot(R.Rhem[:, :, 0].T, Shl[:, 1])
-        - Aer[:, 0]
-    )
-    n9 = numpy.linalg.norm(-Te[:, 0] * Sel[:, 0] + Se[:, 0] * Ser[:, 0] - Ael[:, 0])
-    n10 = numpy.linalg.norm(-Te[:, 1] * Sel[:, 1] + Se[:, 1] * Ser[:, 1] - Ael[:, 1])
-    n11 = numpy.linalg.norm(-Te[:, 2] * Sel[:, 2] + Se[:, 2] * Ser[:, 2] - Ael[:, 2])
-    n12 = numpy.linalg.norm(-Th[:, 0] * Shl[:, 0] + Sh[:, 0] * Shr[:, 0] - Ahl[:, 0])
-    n13 = numpy.linalg.norm(-Th[:, 1] * Shl[:, 1] + Sh[:, 1] * Shr[:, 1] - Ahl[:, 1])
-    n14 = numpy.linalg.norm(-Th[:, 2] * Shl[:, 2] + Sh[:, 2] * Shr[:, 2] - Ahl[:, 2])
-    n15 = numpy.linalg.norm(-Sh[:, 0] * Shl[:, 0] + Th[:, 0] * Shr[:, 0] - Ahr[:, 0])
-    n16 = numpy.linalg.norm(-Sh[:, 1] * Shl[:, 1] + Th[:, 1] * Shr[:, 1] - Ahr[:, 1])
-    n17 = numpy.linalg.norm(-Sh[:, 2] * Shl[:, 2] + Th[:, 2] * Shr[:, 2] - Ahr[:, 2])
-    n18 = numpy.linalg.norm(-Se[:, 0] * Sel[:, 0] + Te[:, 0] * Ser[:, 0] - Aer[:, 0])
-    n19 = numpy.linalg.norm(-Se[:, 1] * Sel[:, 1] + Te[:, 1] * Ser[:, 1] - Aer[:, 1])
-    n20 = numpy.linalg.norm(-Se[:, 2] * Sel[:, 2] + Te[:, 2] * Ser[:, 2] - Aer[:, 2])
-
-    Nv = numpy.array(
-        [
-            n1,
-            n2,
-            n3,
-            n4,
-            n5,
-            n6,
-            n7,
-            n8,
-            n9,
-            n10,
-            n11,
-            n12,
-            n13,
-            n14,
-            n15,
-            n16,
-            n17,
-            n18,
-            n19,
-            n20,
-        ]
-    )
-    N = numpy.linalg.norm(Nv)
+    N = numpy.linalg.norm(numpy.array(residuals))
     return N
 
 
@@ -2273,22 +2422,26 @@ def FMM1d_x_component(slices, nmodi, verbosity=0):
     Message("Matching 1dmodes on slices interfaces.", 1).show(verbosity)
 
     TolnullEig = 1e-1
-    searchinterval = 6e-3
+    dn_search = 1.5e-3
 
     # Ux = slices[0].Ux
     lambda0 = slices[0].wl
     k0 = 2.0 * numpy.pi / lambda0
+    searchinterval = dn_search * k0
 
     Rot = genera_rotazione(slices)
 
-    maxrekz = -1e6
-    minrekz = 1e6
+    maxrekz = -numpy.inf
+    minrekz = numpy.inf
+    max_im_keff = 0.0
 
     for slice in slices:
-        maxrekz0 = numpy.max(
-            numpy.real([m.keff for m in slice.modih] + [m.keff for m in slice.modie])
+        keffs_slice = [m.keff for m in slice.modih] + [m.keff for m in slice.modie]
+        maxrekz0 = float(numpy.max(numpy.real(keffs_slice)))
+        minrekz0 = float(numpy.min(numpy.real(k0 * slice.refractiveindex)))
+        max_im_keff = max(
+            max_im_keff, float(numpy.max(numpy.abs(numpy.imag(keffs_slice))))
         )
-        minrekz0 = numpy.min(numpy.real(k0 * slice.refractiveindex))
         if maxrekz < maxrekz0:
             maxrekz = maxrekz0
         if minrekz > minrekz0:
@@ -2306,15 +2459,16 @@ def FMM1d_x_component(slices, nmodi, verbosity=0):
     rekz = numpy.linspace(
         maxrekz + searchinterval,
         0.0,
-        10.0 * numpy.floor((maxrekz + searchinterval) / searchinterval),
+        int(10 * numpy.floor((maxrekz + searchinterval) / searchinterval)),
     )
 
     abscomp, uscelto, icomp = method_of_component(maxrekz, slices, Rot)
     matchingre = method_of_component(rekz, slices, Rot, uscelto, icomp)[0]
     nre = rekz / k0
-    zerire = findzerosnew(nre, numpy.abs(matchingre), searchinterval)[0]
-    kz1 = k0 * zerire - searchinterval / 2.0 + 1j * searchinterval
-    kz2 = k0 * zerire + searchinterval / 2.0 - 1j * searchinterval
+    zerire = findzerosnew(nre, numpy.abs(matchingre), 4.0 * dn_search)[0]
+    kz_im_half = max(searchinterval, 2.0 * max_im_keff)
+    kz1 = k0 * zerire - searchinterval / 2.0 + 1j * kz_im_half
+    kz2 = k0 * zerire + searchinterval / 2.0 - 1j * kz_im_half
     Message("Found %d possible zeros." % len(zerire), 1).show(verbosity)
     Message("Possible zeros:\n%s" % zerire, 3).show(verbosity)
     Message("Refining zeros.", 1).show(verbosity)

@@ -23,7 +23,10 @@ test:  ## Run tests
 black:  ## Run formatter
 	$(UV) run black ${SRC}
 
-lint: flake8 pyflakes mypy  ## Run linters
+black-check:  ## Check formatting
+	$(UV) run black --check ${SRC}
+
+lint: black-check flake8 pyflakes mypy  ## Run linters
 
 flake8:  ## Run flake8 linter
 	$(UV) run flake8 ${SRC}
@@ -40,6 +43,6 @@ clean-repo:
 	git pull --ff-only  # latest code
 
 release: clean-repo  ## Make a release (specify: PART=[major|minor|patch])
-	bump2version ${PART}
+	$(UV) run bump2version ${PART}
 	git push
 	git push --tags

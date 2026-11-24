@@ -761,11 +761,9 @@ class SRR(Device):
     @type coupler2: L{Coupler}
     @ivar neff: Effective index of the feedback line.
     @type neff: numpy.ndarray
-    @ivar l1: Length of the feedback line (perimeter of the ring) from
-        coupler1 to coupler2.
+    @ivar l1: Length of the feedback line arc entering coupler1 (from coupler2 to coupler1).
     @type l1: scalar
-    @ivar l2: Length of the feedback line (perimeter of the ring) from
-        coupler2 to coupler1.
+    @ivar l2: Length of the feedback line arc from coupler1 to coupler2 (drop path).
     @type l2: scalar
     @ivar THRU: THRU of the filter.
     @type THRU: numpy.ndarray
@@ -932,12 +930,20 @@ class NRR(Device):
 
         """
 
-        self.THRU = numpy.zeros_like(self.wl).astype("complex")
-        self.DROP = numpy.zeros_like(self.wl).astype("complex")
-        for iwl, wl in enumerate(self.wl):
+        wls = numpy.atleast_1d(self.wl)
+        thru = numpy.zeros(wls.shape, dtype=complex)
+        drop = numpy.zeros(wls.shape, dtype=complex)
+        for iwl, wl in enumerate(wls):
             H = self.TM(wl)
-            self.THRU[iwl] = H.data[0, 0]
-            self.DROP[iwl] = H.data[0, 1]
+            thru[iwl] = H.data[0, 0]
+            drop[iwl] = H.data[1, 0]
+
+        if numpy.isscalar(self.wl):
+            self.THRU = thru[0]
+            self.DROP = drop[0]
+        else:
+            self.THRU = thru
+            self.DROP = drop
 
         return self
 
@@ -957,12 +963,12 @@ class NRR(Device):
         return self.CM(wl).to_transfer()
 
     def CM(self, wl=None):
-        """Return the L{TransferMatrix} of the NRR.
+        """Return the L{ChainMatrix} of the NRR.
 
         Notes
         =====
 
-        First build its L{TransferMatrix}, then convert it to L{ChainMatrix}.
+        Compose the L{ChainMatrix} of each ring section with the final coupler.
 
         @return: L{ChainMatrix}.
         @rtype: L{ChainMatrix}
@@ -971,18 +977,21 @@ class NRR(Device):
 
         if wl is None:
             wl = self.wl
-        Hs = []
-        for K, neff, l1, l2 in zip(self.Ks, self.neffs, self.l1s, self.l2s):
-            Hs.append(
+        CMs = []
+        for K, neff, l1, l2 in zip(
+            self.Ks[:-1], self.neffs, self.l1s, self.l2s, strict=True
+        ):
+            CMs.append(
                 composeTMlist(
                     [
                         Line(self.wl, neff, 0.0, neff, l1).TM(wl),
                         K.TM(wl),
                         Line(self.wl, neff, 0.0, neff, l2).TM(wl),
                     ]
-                )
+                ).to_chain()
             )
-        return composeCM(composeTMlist(Hs), self.Ks[-1].CM(wl))
+        CMs.append(self.Ks[-1].CM(wl))
+        return composeCMlist(CMs)
 
 
 class T_TCRR(Device):
@@ -1018,10 +1027,16 @@ class T_TCRR(Device):
             raise ValueError("q must be a scalar.")
         if self.l.shape != (4,):
             raise ValueError("l must be a 1D-array with 4 elements.")
+        if self.coupling is not None and self.coupling != "optimum":
+            raise ValueError("coupling must be None or 'optimum'.")
 
     def solve(self, wls):
         """Compute the THRU and the DROP."""
-        neff, K, q, l, coupling = (self.neff, self.K, self.q, self.l, self.coupling)
+        neff = self.neff
+        K = numpy.array(self.K, dtype=float, copy=True)
+        q = self.q
+        l = numpy.array(self.l, dtype=float, copy=True)
+        coupling = self.coupling
 
         # transform the input in ndarrays
         wls = numpy.asarray(wls)
@@ -1089,6 +1104,8 @@ class T_CRTCRR(Device):
             raise ValueError("K and l must be 1D-arrays with 3 elements.")
         if not numpy.isscalar(self.q):
             raise ValueError("q must be a scalar.")
+        if self.coupling is not None:
+            raise NotImplementedError("coupling is not implemented for T_CRTCRR.")
 
     def solve(self, wls):
         """Compute the THRU and the DROP."""
@@ -1103,6 +1120,7 @@ class T_CRTCRR(Device):
         beta = 2.0 * numpy.pi * neff / wls
 
         t1 = numpy.exp(-1j * beta * l[0])
+        t1_15 = numpy.exp(-1.5j * beta * l[0])
         t2 = numpy.exp(-1j * beta * l[1])
         t3 = numpy.exp(-1j * beta * l[2])
         t31 = t3 / t1
@@ -1116,7 +1134,7 @@ class T_CRTCRR(Device):
             - q**2 * Kbar[1] * t2**2 * (Kbar[2] - q**3 * t1**2 * N1)
         )
         self.DROP = (
-            1j * q**4 * K[0] * K[1] * K[2] * Kbar[0] * t1**1.5 * t2 * (1 + t31) / denom
+            1j * q**4 * K[0] * K[1] * K[2] * Kbar[0] * t1_15 * t2 * (1 + t31) / denom
         )
         self.THRU = (
             q**2
@@ -1166,19 +1184,25 @@ class T_CTCRR(Device):
             raise ValueError("l must be a 1D-array with 4 elements.")
         if not numpy.isscalar(self.q):
             raise ValueError("q must be a scalar.")
+        if self.coupling is not None and self.coupling != "optimum":
+            raise ValueError("coupling must be None or 'optimum'.")
 
     def solve(self, wls):
         """Compute the THRU and the DROP."""
-        neff, K, q, l, coupling = (self.neff, self.K, self.q, self.l, self.coupling)
+        neff = self.neff
+        K = numpy.array(self.K, dtype=float, copy=True)
+        q = self.q
+        l = numpy.array(self.l, dtype=float, copy=True)
+        coupling = self.coupling
 
         # transform the input in ndarrays
         wls = numpy.asarray(wls)
         if wls.shape != neff.shape:
             raise ValueError("wrong wls and neff shape.")
 
-        if coupling is not None:
-            # optimum: l2 = 2l1, l3 = l4
-            l[1] = l[0]  # OKKIO: check me!
+        if coupling == "optimum":
+            # optimum (Barbarossa 1997): l2 = l1, l3 = 2 * l1, l4 = 2 * l2
+            l[1] = l[0]
             l[2] = 2 * l[0]
             l[3] = 2 * l[1]
             # optimum: see article
@@ -1195,7 +1219,9 @@ class T_CTCRR(Device):
         beta = 2.0 * numpy.pi * neff / wls
 
         t1 = numpy.exp(-1j * beta * l[0])
+        t1_15 = numpy.exp(-1.5j * beta * l[0])
         t2 = numpy.exp(-1j * beta * l[1])
+        t2_15 = numpy.exp(-1.5j * beta * l[1])
         t3 = numpy.exp(-1j * beta * l[2])
         t4 = numpy.exp(-1j * beta * l[3])
         t31 = t3 / t1
@@ -1210,16 +1236,17 @@ class T_CTCRR(Device):
             - q**3 * t1**2 * N1 * Kbar[2]
             - q**3 * t2**2 * N2 * (Kbar[2] - q**3 * t1**2 * N1)
         )
+        # Three cross-couplings (MZ1, K[2], MZ2) under Coupler [[t, jK], [jK, t]] give j^3 = -j.
         self.DROP = (
-            1j
+            -1j
             * q**5
             * K[0]
             * K[1]
             * K[2]
             * Kbar[0]
             * Kbar[1]
-            * t1**1.5
-            * t2**1.5
+            * t1_15
+            * t2_15
             * (1 + t31)
             * (1 + t42)
             / denom
@@ -1298,7 +1325,7 @@ class SWG(Device):
             pf = SWG.pf488_125
         elif (self.w, self.T) == (488, 225):
             pf = SWG.pf488_225
-        elif (self.w, self.T) == (400, 225):
+        elif (self.w, self.T) == (400, 25):
             pf = SWG.pf400_25
         elif (self.w, self.T) == (400, 125):
             pf = SWG.pf400_125
@@ -1309,21 +1336,19 @@ class SWG(Device):
         else:
             import scipy.interpolate
 
-            pf_ = numpy.zeros((2, 3, 3))
-            [w_, T_] = numpy.meshgrid([400, 488], [25, 125, 225])
-            pf_[0, 0, :] = SWG.pf400_25
-            pf_[0, 1, :] = SWG.pf400_125
-            pf_[0, 2, :] = SWG.pf400_225
-            pf_[1, 0, :] = SWG.pf488_25
-            pf_[1, 1, :] = SWG.pf488_125
-            pf_[1, 2, :] = SWG.pf488_225
-            pf = [
-                scipy.interpolate.interp2d(w_.T, T_.T, pf_[:, :, i])(self.w, self.T)[0]
-                for i in range(3)
-            ]
+            pf_ = numpy.array(
+                [
+                    [SWG.pf400_25, SWG.pf400_125, SWG.pf400_225],
+                    [SWG.pf488_25, SWG.pf488_125, SWG.pf488_225],
+                ]
+            )
+            interp = scipy.interpolate.RegularGridInterpolator(
+                ([400, 488], [25, 125, 225]), pf_, method="linear"
+            )
+            pf = interp((self.w, self.T))
 
         # transform the input in an ndarray
-        wls = numpy.asarray(wls)
+        wls = numpy.atleast_1d(wls)
 
         wls_nm = wls * 1e9
         neff = numpy.polyval(pf, wls_nm)
@@ -1342,18 +1367,18 @@ class SWG(Device):
 class Etalon(Device):
     """Etalon.
 
-    @ivar R: Reflectivity.
-    @ivar theta: Angle of incidence.
+    @ivar R: Mirror power reflectivity.
+    @ivar theta: Internal propagation/refraction angle inside the cavity layer (radians).
 
     @see: U{http://en.wikipedia.org/wiki/Etalon}
 
     """
 
     def __init__(self, layer, R, theta):
-        self.FWHMwl = self.FSRwl / self.FINESSE
         self.layer = layer
         self.R = R
         self.theta = theta
+        self.sanity_check()
 
     def sanity_check(self):
         pass
@@ -1362,28 +1387,52 @@ class Etalon(Device):
         """Compute the frequency response of the etalon."""
 
         # transform the input in an ndarray
-        wls = numpy.asarray(wls)
+        wls = numpy.atleast_1d(wls)
 
         n = self.layer.mat.n(wls)
         l = self.layer.thickness
 
-        # phase difference between any succeeding reflection
+        # Compute group index ng = Re(n - wl * dn/dwl) for dispersive cavities
+        dw = wls * 1e-7
+        try:
+            dn_dwl = (self.layer.mat.n(wls + dw) - self.layer.mat.n(wls - dw)) / (
+                2.0 * dw
+            )
+        except (KeyError, ValueError):
+            dn_dwl = numpy.gradient(n, wls) if wls.size > 1 else numpy.zeros_like(n)
+        ng = numpy.real(n - wls * dn_dwl)
+
+        # Round-trip complex phase (under exp(+i*w*t - i*k*z), Im(n) <= 0 attenuates exp(-i*delta))
         self.delta = 2 * numpy.pi / wls * 2 * n * l * numpy.cos(self.theta)
         # coefficient of finesse
         self.F = 4.0 * self.R / (1 - self.R) ** 2
-        # transmission function
-        self.Te = 1.0 / (1.0 + self.F * numpy.sin(self.delta / 2.0) ** 2)
+        # Airy power transmission (reduces identically to 1 / (1 + F * sin(delta/2)^2) when Im(n) == 0)
+        if numpy.iscomplexobj(self.delta) and numpy.any(numpy.imag(self.delta) != 0):
+            p = numpy.exp(-0.5j * self.delta)
+            self.Te = numpy.abs((1.0 - self.R) * p / (1.0 - self.R * p**2)) ** 2
+        else:
+            delta_r = numpy.real(self.delta)
+            self.Te = 1.0 / (1.0 + self.F * numpy.sin(delta_r / 2.0) ** 2)
         self.Rmax = 1.0 - 1.0 / (1.0 + self.F)
 
         self.wl0 = numpy.mean(wls)
-        self.FSRwl = self.wl0**2 / (2 * n * l * numpy.cos(self.theta) + self.wl0)
+        self.FSRwl = wls**2 / (2 * ng * l * numpy.cos(self.theta))
 
-        self.f0, self.FSR = EMpy.utils.wl2f(self.wl0, self.FSRwl)
+        self.f0, self.FSR = EMpy.utils.wl2f(wls, self.FSRwl)
 
-        self.FINESSE = numpy.pi / (2 * numpy.arcsin(1.0 / numpy.sqrt(self.F)))
-        # self.FINESSE = numpy.pi * numpy.sqrt(self.F) / 2.
-        # self.FINESSE = numpy.pi * numpy.sqrt(self.R) / (1 - self.R)
+        if numpy.all(self.F >= 1.0):
+            self.FINESSE = numpy.pi / (2 * numpy.arcsin(1.0 / numpy.sqrt(self.F)))
+        else:
+            f_arr = numpy.asarray(self.F, dtype=float)
+            fin = numpy.where(
+                f_arr >= 1.0,
+                numpy.pi
+                / (2.0 * numpy.arcsin(1.0 / numpy.sqrt(numpy.maximum(f_arr, 1.0)))),
+                numpy.nan,
+            )
+            self.FINESSE = float(fin) if numpy.ndim(self.F) == 0 else fin
 
+        self.FWHMwl = self.FSRwl / self.FINESSE
         self.FWHM = self.FSR / self.FINESSE
 
         return self
