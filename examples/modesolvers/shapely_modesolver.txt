@@ -1,0 +1,42 @@
+﻿ **FREE** Full Vector Optical Modesolver
+
+https://github.com/davidchutchings/EMpy
+
+The full-vectorial finite-difference modesolver is part of the Electromagnetic Python suite available from GitHub and PyPI repositories (which was a port from UMD MatLab implementation), and can be installed using pip:
+
+pip install ElectromagneticPython
+
+I have created a fork on GitHub which adds in the examples, for isotropic and anisotropic (birefringent, magneto-optic) media respectively :
+
+shapely_modesolver.py
+
+shapely_modesolver_anis.py
+
+"""Fully vectorial finite-difference mode solver example.
+
+Flexible mode solver example for fundamental modes for anisotropic media
+by David Hutchings, James Watt School of Engineering, University of Glasgow
+David.Hutchings@glasgow.ac.uk
+
+Features added over basic examples in EMPy
+
+1. Uses shapely python library for manipulation and analysis of geometric 
+objects in the Cartesian plane. It allows polygon regions to be employed.
+
+2. smooth option applies a 2x2 cell moving average to permittivity tensors
+
+3. Contour plots of Stokes parameters are available. These are pure real 
+values and determined from both H and E field values (E co-located using a 
+2x2 cell moving average) rather than plane-wave approximation of one field 
+component. S0 is the irradiance, values are scaled to S0(max) and contours 
+are at -3dB intervals. Additionally, average values over modal 
+cross-section are computed.
+S0 = Re(E_x H_y^* -E_y H_x^*) = S.z_unit (Irradiance)
+S1 = Re(E_x H_y^* +E_y H_x^*)            (modal normal birefringence)
+S2 = Re(E_y H_y^* -E_x H_x^*)            (modal diagonal birefringence)
+S3 = Im(E_y H_y^* +E_x H_x^*)            (modal circular birefringence, 
+                usually non-zero only for magneto-optic Faraday rotation)
+
+Integrated Optical Isolators (planned for: Springer Series in Optical Sciences)
+chapter: Theory of Faraday effect and waveguide mode conversion
+David C. Hutchings

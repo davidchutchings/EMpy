@@ -1,0 +1,240 @@
+"""Fully vectorial finite-difference mode solver example.
+
+Flexible mode solver example for fundamental modes for isotropic media
+by David Hutchings, James Watt School of Engineering, University of Glasgow
+David.Hutchings@glasgow.ac.uk
+
+Features added over basic examples
+
+1. Uses shapely python library for manipulation and analysis of geometric 
+objects in the Cartesian plane. It allows polygon regions to be employed.
+
+2. smooth option applies a 2x2 cell moving average to permittivity values
+
+3. Contour plots of Stokes parameters are available. These are pure real 
+values and determined from both H and E field values (E co-located using a 
+2x2 cell moving average) rather than plane-wave approximation of one field 
+component. S0 is the irradiance, values are scaled to S0(max) and contours 
+are at -3dB intervals. Additionally, average values over modal 
+cross-section are computed.
+S0 = Re(E_x H_y^* -E_y H_x^*) = S.z_unit (Irradiance)
+S1 = Re(E_x H_y^* +E_y H_x^*)            (modal normal birefringence)
+S2 = Re(E_y H_y^* -E_x H_x^*)            (modal diagonal birefringence)
+S3 = Im(E_y H_y^* +E_x H_x^*) = 0        (modal circular birefringence)
+
+Integrated Optical Isolators (planned for: Springer Series in Optical Sciences)
+chapter: Theory of Faraday effect and waveguide mode conversion
+David C. Hutchings
+ 
+"""
+
+import numpy
+import shapely
+import EMpy 
+import matplotlib.pyplot as plt
+from matplotlib import ticker
+from shapely import plotting
+from scipy import signal
+from scipy import integrate
+
+plt.rcParams.update({'font.size': 17})
+
+"""Define cross-section geometry of simulation each element tuple contains
+("label",shapely.Polygon(coordinates),eps) for isotropic media
+shapely.box(xmin, ymin, xmax, ymax) is shorthand method for box polygons
+shapely.Point(x, y).buffer(radius) produces a polygon approximation to a circle
+units should match units of wavelength wl
+"""
+# Example 1: cylindrical core with silica cladding (fibre)
+# note this structure has degenerate fundamental modes
+geom = (("base",shapely.box(-960,-960,960,960),1.46**2),
+        ("core",shapely.Point(0,0).buffer(300),2.2**2))
+
+#Example 2: dry etched Si waveguide on silica substrate
+#geom = (("base",shapely.box(-640,-480,640,800),1.0**2),
+#        ("substrate",shapely.box(-640,-480,640,0),1.46**2),
+#        ("core",shapely.box(-320,0,320,340),3.4**2))
+
+#Example 3: dry/wet etched Si waveguide on silica substrate
+#geom = (("base",shapely.box(-640,-480,640,800),1.0**2),
+#        ("substrate",shapely.box(-640,-480,640,0),1.46**2),
+#        ("core",shapely.Polygon(((-400,0),(240,0),(0,340),(-400,340),(-400,0))),3.4**2))
+
+# Example 4: Strip-loaded GaAs/Al_0.41Ga_0.59As waveguide
+#geom = (("base",shapely.box(-2500,-2500,2500,2500),1.0**2),
+#        ("substrate",shapely.box(-2500,-2500,2500,-550),3.18**2),
+#        ("core",shapely.box(-2500,-550,2500,-50),3.38**2),
+#        ("cladding",shapely.Polygon(((-2500,-50),(-2500,0),(-400,0),(-400,450),
+#                                     (400,450),(400,0),(2500,0),(2500,-50),
+#                                     (-2500,-50))),3.18**2))
+
+wl = 1550
+k = 7
+nx, ny = 2**k+1, 2**k+1
+bbox = geom[0][1].bounds
+x = numpy.linspace(bbox[0], bbox[2], nx)
+y = numpy.linspace(bbox[1], bbox[3], ny)
+ix = numpy.arange(nx)
+iy = numpy.arange(ny)
+
+""" smooth option applies a convolution to dielectric tensor such that 
+it uses a 2x2-point moving average value. this will help smooth out 
+staircase profiles 
+"""
+smooth = True
+
+def epsfunc(x_, y_): 
+    """Return a dielectric tensor matrix describing a 2d material.
+    :param x_: x values
+    :param y_: y values
+    :return: 2d-matrix
+    """
+    
+    if smooth:
+        xw = signal.convolve(x_,[0.5,0.5],mode='valid')
+        xw = numpy.concatenate(([(3*x_[0]-x_[1])/2.], xw, [(3*x_[-1]-x_[-2])/2.]))
+        yw = signal.convolve(y_,[0.5,0.5],mode='valid')
+        yw = numpy.concatenate(([(3*y_[0]-y_[1])/2.], yw, [(3*y_[-1]-y_[-2])/2.]))
+    else:   
+        xw = x_
+        yw = y_
+        
+#assume base medium is isotropic
+    working = numpy.empty((xw.size,yw.size),dtype='complex')
+    for ix, xv in enumerate(xw):
+        for iy, yv in enumerate(yw):
+
+            cov_test=False
+            i=len(geom)
+            while not(cov_test):
+                i += -1
+                cov_test=shapely.covers(geom[i][1],shapely.Point(xv,yv))
+            working[ix,iy] = geom[i][2]                 
+                            
+    if smooth:
+        newworking = numpy.empty((x_.size,y_.size),dtype='complex')     
+        newworking[:,:] = signal.convolve2d( working[:,:], [[0.25,0.25],[0.25,0.25]],mode='valid')
+
+        working = newworking
+        
+    return working
+  
+neigs = 2
+tol = 1e-6
+boundary = '0000'
+solver = EMpy.modesolvers.FD.VFDModeSolver(wl, x, y, epsfunc, boundary).solve(
+    neigs, tol)
+
+levls = numpy.geomspace(1./32.,1.,num=11)
+levls2 = numpy.geomspace(1./1024.,1.,num=11)
+xe = signal.convolve(x,[0.5,0.5],mode='valid')
+ye = signal.convolve(y,[0.5,0.5],mode='valid')
+label_loc = [(3*bbox[2]+bbox[0])/4.,(5*bbox[3]+bbox[1])/6.]
+    
+def geom_outline():
+    ax.set_box_aspect(1)
+    ax.set_aspect('equal')
+    ax.set_xlabel('distance/nm')
+    ax.set_ylabel('height/nm')
+    ax.set_xlim(bbox[0], bbox[2])
+    ax.set_ylim(bbox[1], bbox[3])
+    ax.margins(0)
+    plotting.plot_polygon(geom[1][1], color='0.8')
+    [plotting.plot_polygon(geom[i][1], color='0.5') for i in range(2,len(geom))]
+    return
+
+for n in numpy.arange(neigs):
+
+    print(solver.modes[n].neff)
+    fmax=max(abs(solver.modes[n].Ex).max(), 
+             abs(solver.modes[n].Ey).max())
+    fig = plt.figure()
+
+    ax = fig.add_subplot(2, 3, 1)
+    geom_outline()
+    plt.contour(xe,ye,abs(solver.modes[n].Ex.T), fmax*levls, 
+            cmap='jet', locator=ticker.LogLocator())
+    ax.text(label_loc[0],label_loc[1],r"$E_x$")
+
+    ax = fig.add_subplot(2, 3, 2)
+    geom_outline()
+    plt.contour(xe,ye,abs(solver.modes[n].Ey.T), fmax*levls, 
+            cmap='jet', locator=ticker.LogLocator())
+    ax.text(label_loc[0],label_loc[1],r"$E_y$")
+
+    ax = fig.add_subplot(2, 3, 3)
+    geom_outline()
+    plt.contour(xe,ye,abs(solver.modes[n].Ez.T), fmax*levls, 
+            cmap='jet', locator=ticker.LogLocator())
+    ax.text(label_loc[0],label_loc[1],r"$E_z$")
+
+    fmax=max(abs(solver.modes[n].Hx).max(), 
+             abs(solver.modes[n].Hy).max())
+    ax = fig.add_subplot(2, 3, 4)
+    geom_outline()
+    plt.contour(x,y,abs(solver.modes[n].Hx.T), fmax*levls, 
+            cmap='jet', locator=ticker.LogLocator())
+    ax.text(label_loc[0],label_loc[1],r"$H_x$")
+
+    ax = fig.add_subplot(2, 3, 5)
+    geom_outline()
+    plt.contour(x,y,abs(solver.modes[n].Hy.T), fmax*levls, 
+            cmap='jet', locator=ticker.LogLocator())
+    ax.text(label_loc[0],label_loc[1],r"$H_y$")
+
+    ax = fig.add_subplot(2, 3, 6)
+    geom_outline()
+    plt.contour(x,y,abs(solver.modes[n].Hz.T), fmax*levls, 
+            cmap='jet', locator=ticker.LogLocator())
+    ax.text(label_loc[0],label_loc[1],r"$H_z$")
+
+    fig.tight_layout()
+    plt.show()
+
+    ExatH = signal.convolve2d(solver.modes[n].Ex,[[0.25,0.25],[0.25,0.25]])
+    EyatH = signal.convolve2d(solver.modes[n].Ey,[[0.25,0.25],[0.25,0.25]])
+    EzatH = signal.convolve2d(solver.modes[n].Ez,[[0.25,0.25],[0.25,0.25]])
+#Stokes parameters
+    q1 = ExatH*numpy.conjugate(solver.modes[n].Hy)
+    q2 = EyatH*numpy.conjugate(solver.modes[n].Hx)
+    q3 = EyatH*numpy.conjugate(solver.modes[n].Hy)
+    q4 = ExatH*numpy.conjugate(solver.modes[n].Hx)
+
+    S0 = q1.real-q2.real
+    S1 = q1.real+q2.real
+    S2 = q3.real-q4.real
+    S3 = q3.imag+q4.imag
+    denom = integrate.simpson(integrate.simpson(S0[ix[:,None],iy], iy), ix)
+    print("ave S1=",integrate.simpson(integrate.simpson(S1[ix[:,None],iy], iy), ix)/denom)
+    print("ave S2=",integrate.simpson(integrate.simpson(S2[ix[:,None],iy], iy), ix)/denom)
+    print("ave S3=",integrate.simpson(integrate.simpson(S3[ix[:,None],iy], iy), ix)/denom)
+    fmax=abs(S0).max()
+    fig = plt.figure()
+
+    ax = fig.add_subplot(2, 2, 1)
+    geom_outline()
+    plt.contour(x,y,abs(S0.T), fmax*levls2, 
+            cmap='jet', locator=ticker.LogLocator())
+    ax.text(label_loc[0],label_loc[1],r"$S_0$")
+
+    ax = fig.add_subplot(2, 2, 2)
+    geom_outline()
+    plt.contour(x,y,abs(S1.T), fmax*levls2, 
+            cmap='jet', locator=ticker.LogLocator())
+    ax.text(label_loc[0],label_loc[1],r"$|S_1|$")
+
+    ax = fig.add_subplot(2, 2, 3)
+    geom_outline()
+    plt.contour(x,y,abs(S2.T), fmax*levls2, 
+            cmap='jet', locator=ticker.LogLocator())
+    ax.text(label_loc[0],label_loc[1],r"$|S_2|$")
+
+    ax = fig.add_subplot(2, 2, 4)
+    geom_outline()
+    plt.contour(x,y,abs(S3.T), fmax*levls2, 
+                cmap='jet', locator=ticker.LogLocator())
+    ax.text(label_loc[0],label_loc[1],r"$|S_3|$")
+
+    fig.tight_layout()
+    plt.show()
+
